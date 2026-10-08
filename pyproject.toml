@@ -17,9 +17,7 @@ dependencies = [
     "llama-index-readers-docling>=0.5,<0.6",
     "llama-index-node-parser-docling>=0.5,<0.6",
     "llama-index-vector-stores-qdrant>=0.10,<0.11",
-    "ipykernel>=7.4.0",
     "streamlit",
-    "reportlab",
     "langgraph",
     "langchain-ollama",
     "sqlglot",  # parses a generated query to check it before it runs (src/rag_lab/sql/guard.py)

@@ -3,8 +3,8 @@ no Dagster).
 
 An experiment is a Qdrant collection (what search sees), its `experiments` row, its stage metric rows and
 its folder data/artifacts/<name>/. Deleting always goes Qdrant first, then files, then database rows, so
-that a half-finished delete can be finished by running it again. The uploaded file in data/uploads, a PDF
-in data/raw, the parse cache and anything in Dagster are never touched.
+that a half-finished delete can be finished by running it again. A PDF in data/raw and anything in
+Dagster are never touched.
 """
 
 import re
@@ -21,7 +21,7 @@ ARTIFACT_STAGES = ("parse", "chunk", "embed")
 
 def _artifact_dir(name: str) -> Path | None:
     """data/artifacts/<name>, or None when the name could not be an experiment's. Names starting with
-    an underscore (_cache, _uploads) never match the pattern, and the folder must stay inside artifacts."""
+    an underscore (_cache) never match the pattern, and the folder must stay inside artifacts."""
     if not re.fullmatch(NAME_PATTERN, name):
         return None
     root = (DATA_DIR / "artifacts").resolve()
@@ -32,7 +32,7 @@ def _artifact_dir(name: str) -> Path | None:
 def list_library(metrics: MetricsStore, qdrant: QdrantStore) -> list[dict]:
     """Every experiment with its documents, newest first, then the collections that have no experiment
     row. Each entry: name, config (None without a row), has_row, has_collection, documents (name, id,
-    points, ingested_at), points, in_report, created_at."""
+    points, ingested_at), points, created_at."""
     collections = {
         c.name for c in qdrant.client.get_collections().collections if not c.name.startswith(SQL_EXAMPLES_PREFIX)
     }
@@ -48,7 +48,6 @@ def list_library(metrics: MetricsStore, qdrant: QdrantStore) -> list[dict]:
                 "has_collection": present,
                 "documents": docs,
                 "points": sum(d["points"] for d in docs),
-                "in_report": row["benchmarked"],
                 "created_at": row["created_at"],
             }
         )
@@ -63,7 +62,6 @@ def list_library(metrics: MetricsStore, qdrant: QdrantStore) -> list[dict]:
                 "has_collection": True,
                 "documents": docs,
                 "points": sum(d["points"] for d in docs),
-                "in_report": False,
                 "created_at": None,
             }
         )

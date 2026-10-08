@@ -118,7 +118,7 @@ def build_graph(
         except SchemaTooLarge as e:
             return {"schema": text, "stop": str(e)}
         if not text.tables:
-            return {"schema": text, "stop": f"The schema '{schema_name}' has no tables. Import a CSV file on the Database page."}
+            return {"schema": text, "stop": f"The schema '{schema_name}' has no tables."}
         return {"schema": text}
 
     @step

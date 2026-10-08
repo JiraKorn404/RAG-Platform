@@ -2,7 +2,7 @@
 them and shown to the text-to-SQL agent when a similar question comes later.
 
 The examples are rows in `rag_metrics.sql_examples` (the source of truth) and points in a small Qdrant
-collection per schema, `sqlexamples__<schema>`, one point for each enabled example, embedded from its
+collection per schema, `sqlexamples__<schema>`, one point for each example, embedded from its
 standalone question. A change goes to the table first and then to Qdrant, so a failure between the two
 is put right by `reindex`, which rebuilds the collection from the table."""
 
@@ -92,8 +92,7 @@ def save(
     metrics: MetricsStore, embedder: OllamaEmbedder, store: QdrantStore, cfg: SqlAgentConfig,
     schema: str, question: str, standalone: str, sql: str, turn_id: int | None,
 ) -> int:
-    """Keep a good answer as an example (turning it on if it was saved and then turned off) and index it.
-    Returns its id."""
+    """Keep a good answer as an example and index it. Returns its id."""
     example_id = metrics.add_sql_example(schema, question, standalone, sql, turn_id)
     _upsert(embedder, store, cfg, schema, [{"id": example_id, "standalone": standalone, "sql": sql}])
     return example_id
@@ -102,18 +101,6 @@ def save(
 def remove(metrics: MetricsStore, store: QdrantStore, schema: str, example_id: int) -> None:
     metrics.delete_sql_example(example_id)
     _delete_point(store, schema, example_id)
-
-
-def set_enabled(
-    metrics: MetricsStore, embedder: OllamaEmbedder, store: QdrantStore, cfg: SqlAgentConfig,
-    schema: str, example: dict, enabled: bool,
-) -> None:
-    """Turn an example on (it is indexed) or off (its point goes, so it is not found)."""
-    metrics.set_sql_example_enabled(example["id"], enabled)
-    if enabled:
-        _upsert(embedder, store, cfg, schema, [example])
-    else:
-        _delete_point(store, schema, example["id"])
 
 
 def has_examples(store: QdrantStore, schema: str) -> bool:
@@ -137,8 +124,8 @@ def retrieve(embedder: OllamaEmbedder, store: QdrantStore, cfg: SqlAgentConfig, 
 def reindex(
     metrics: MetricsStore, embedder: OllamaEmbedder, store: QdrantStore, cfg: SqlAgentConfig, schema: str | None = None
 ) -> dict[str, int]:
-    """Rebuild the collection of a schema (every schema when none is given) from the enabled examples in
-    the table. Returns how many examples each schema has indexed."""
+    """Rebuild the collection of a schema (every schema when none is given) from the examples in the
+    table. Returns how many examples each schema has indexed."""
     found = metrics.list_sql_examples(schema)
     schemas = [schema] if schema else sorted({e["schema_name"] for e in found} | {
         c.name.removeprefix(SQL_EXAMPLES_PREFIX)
@@ -148,7 +135,7 @@ def reindex(
     done = {}
     for name in schemas:
         drop_index(store, name)
-        rows = [e for e in found if e["schema_name"] == name and e["enabled"]]
+        rows = [e for e in found if e["schema_name"] == name]
         _upsert(embedder, store, cfg, name, rows)
         done[name] = len(rows)
     return done

@@ -2,8 +2,8 @@
 
 A picture chunk's `image` is its file (parsing/pictures.py) and its text is the picture's caption, or
 "Figure on page N" when Docling linked none, so the text is never empty: BM25 and the rerankers read
-it, and the embedding does too unless `embed.picture_input` is `image`. It has no text of its own in
-the document, so its span is empty, at the end of the last text or table before it."""
+it, and the embedding does too unless `embed.picture_input` is `image`. Its headings are those of the
+last text or table before it."""
 
 from rag_lab.chunking.base import ChunkContext
 from rag_lab.chunking.models import Chunk
@@ -13,21 +13,21 @@ from rag_lab.parsing.pictures import kept_pictures, pictures_dir
 
 def picture_chunks(ctx: ChunkContext) -> list[Chunk]:
     doc, cfg = ctx.doc, ctx.cfg
-    # where every text and table item ends in the reference text, and the headings it is under
-    where: dict[str, tuple[int, list[str]]] = {}
+    # the headings every text and table item is under
+    headings_of: dict[str, list[str]] = {}
     for block in segment(doc):
         if isinstance(block, TableBlock):
-            where[block.item.self_ref] = (block.offset + len(block.markdown), block.headings)
+            headings_of[block.item.self_ref] = block.headings
         else:
-            for paragraph, _, end in block.paragraph_spans():
-                where[paragraph.ref] = (end, block.headings)
+            for paragraph in block.paragraphs:
+                headings_of[paragraph.ref] = block.headings
 
     kept = {picture.self_ref: n for n, picture in kept_pictures(doc, cfg.parse)}
-    at, headings = 0, []
+    headings: list[str] = []
     chunks = []
     for item, _ in doc.iterate_items():
-        if item.self_ref in where:
-            at, headings = where[item.self_ref]
+        if item.self_ref in headings_of:
+            headings = headings_of[item.self_ref]
         elif item.self_ref in kept:
             prov = item.prov[0]
             text = " ".join(item.caption_text(doc).split()) or f"Figure on page {prov.page_no}"
@@ -42,7 +42,6 @@ def picture_chunks(ctx: ChunkContext) -> list[Chunk]:
                     page=prov.page_no,
                     headings=list(headings),
                     bbox=list(prov.bbox.as_tuple()),
-                    span=[at, at],
                     image=f"{pictures_dir(ctx.doc_id)}/{kept[item.self_ref]}.png",
                 )
             )

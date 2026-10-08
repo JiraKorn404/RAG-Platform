@@ -21,11 +21,9 @@ from rag_lab.agent.events import (
     SqlRan,
     SqlWritten,
     Thinking,
-    citations,
     from_dict,
 )
 from rag_lab.agent.sql import remembered
-from rag_lab.search import Hit
 
 STEP_NAMES = {
     "condense": "Reading the question",
@@ -90,26 +88,12 @@ def apply(trace: dict, event) -> None:
 
 
 def trace_from_turn(turn: dict) -> dict:
-    """What is shown for a saved turn. A documents turn saved before its events were kept is rebuilt from
-    its columns: one search, with no times for it and no verdict."""
-    settings = turn["settings"] or {"model": turn["model"], "think": turn["think"]}
-    trace = new_trace(turn["question"], settings, turn["kind"])
-    if turn["events"] is not None:
-        for saved in turn["events"]:
-            apply(trace, from_dict(saved))
-        trace["error"] = turn["error"]
-        trace["turn_id"] = turn["id"]
-        return trace
-    hits = [Hit(**h) for h in turn["hits"]]
-    cited, unknown = citations(turn["answer"], len(hits))
-    events = [
-        Query(turn["query"], rewritten=turn["query"] != turn["question"]),
-        Retrieved(hits=hits, method="", candidates=0, embed_ms=0.0, search_ms=0.0, rerank_ms=0.0),
-        *[ModelState(**s) for s in turn["model_states"]],
-        Done(turn["answer"], turn["thinking"], cited, unknown, turn["timings"], sum(turn["timings"].values())),
-    ]
-    for event in events:
-        apply(trace, event)
+    """What is shown for a saved turn: its events, applied in order."""
+    trace = new_trace(turn["question"], turn["settings"], turn["kind"])
+    for saved in turn["events"]:
+        apply(trace, from_dict(saved))
+    trace["error"] = turn["error"]
+    trace["turn_id"] = turn["id"]
     return trace
 
 
@@ -281,7 +265,7 @@ def show_trace(trace: dict) -> None:
                 seen = set(pictures[: settings.get("max_pictures", 0)])
                 st.markdown(
                     "".join(
-                        hit_card(h, style.MODEL_COLORS[0], cited=h.rank in cited, seen=h.rank in seen)
+                        hit_card(h, style.ACCENT,cited=h.rank in cited, seen=h.rank in seen)
                         for h in retrieved.hits
                     ),
                     unsafe_allow_html=True,

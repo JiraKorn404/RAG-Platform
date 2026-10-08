@@ -1,15 +1,9 @@
-"""What every chunking strategy shares: the context it receives and the registry it is listed in.
+"""What every chunking strategy is given."""
 
-Adding a strategy means writing one module that decorates a function with @register("name") and
-importing that module in chunking/__init__.py.
-"""
-
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from docling_core.types.doc import DoclingDocument
 
-from rag_lab.chunking.models import Chunk
 from rag_lab.chunking.tokens import Tokens
 from rag_lab.config import ExperimentConfig
 from rag_lab.embedding.ollama import OllamaEmbedder
@@ -24,15 +18,3 @@ class ChunkContext:
     embedder: OllamaEmbedder | None = None  # only the semantic strategy needs it
     stats: dict = field(default_factory=dict)  # strategy-specific numbers, reported as metrics
     warnings: list[str] = field(default_factory=list)
-
-
-Chunker = Callable[[ChunkContext], list[Chunk]]
-REGISTRY: dict[str, Chunker] = {}
-
-
-def register(name: str):
-    def decorator(fn: Chunker) -> Chunker:
-        REGISTRY[name] = fn
-        return fn
-
-    return decorator

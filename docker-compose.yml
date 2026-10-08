@@ -25,7 +25,6 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d dagster"]
       interval: 5s
@@ -41,11 +40,23 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  dagster-code:
+  # Runs once when the stack starts and exits: creates our two databases if they are missing, applies
+  # the migrations and makes the roles (src/rag_lab/setup.py). The UI and Dagster wait for it.
+  setup:
     build:
       context: .
       dockerfile: docker/dagster/Dockerfile
-    image: rag-lab-dagster:latest
+    image: rag-platform:latest
+    command: python -m rag_lab.setup
+    environment: *dagster-env
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dagster-code:
+    image: rag-platform:latest
     command: dagster api grpc -h 0.0.0.0 -p 4000 -m rag_lab.definitions
     environment: *dagster-env
     volumes:
@@ -58,13 +69,13 @@ services:
       # The instance settings are mounted over the copy in the image, so an edit needs a restart, not a build.
       - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
 
   dagster-webserver:
-    image: rag-lab-dagster:latest
+    image: rag-platform:latest
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
     environment: *dagster-env
     ports:
@@ -73,27 +84,27 @@ services:
       - dagster_storage:/opt/dagster/storage
       - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
       dagster-code:
         condition: service_started
 
   dagster-daemon:
-    image: rag-lab-dagster:latest
+    image: rag-platform:latest
     command: dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
     environment: *dagster-env
     volumes:
       - dagster_storage:/opt/dagster/storage
       - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
       dagster-code:
         condition: service_started
 
   # Dashboard over rag_metrics and a page for trying queries across experiments.
   ui:
-    image: rag-lab-dagster:latest
+    image: rag-platform:latest
     command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
     working_dir: /app/ui # so Streamlit finds ui/.streamlit/config.toml
     environment: *dagster-env
@@ -107,8 +118,8 @@ services:
       - ./data:/app/data
       - model_cache:/root/.cache
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
       dagster-code:

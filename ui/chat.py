@@ -222,14 +222,14 @@ with st.sidebar:
             name = st.selectbox("Experiment", list(by_name), key="experiment", format_func=lambda n: describe(by_name[n]), disabled=locked)
             target = by_name[name]
         else:
-            st.info("No experiment with a BM25 vector exists yet. On the Upload page, tick the BM25 box when embedding a document.")
+            st.info("No experiment with a BM25 vector exists yet. Set `index.sparse: true` in config/ingest.yaml and put a PDF in data/raw.")
         if not rerankers:
             st.info("Ollama has no reranker installed, so documents cannot be searched.")
             target = None
     elif schemas:
         target = st.selectbox("Schema", list(schema_by_name), key="schema", format_func=lambda n: f"{n} · {schema_by_name[n]['tables']} table(s)", disabled=locked)
     else:
-        st.info("No schema exists yet. Import a CSV file on the Database page.")
+        st.info("No schema exists yet.")
     model = st.selectbox("Chat model", models, index=models.index(defaults.model) if defaults.model in models else 0)
     can_think, can_see = "thinking" in chat_models[model], "vision" in chat_models[model]
     think = st.toggle("Thinking", value=defaults.think and can_think, disabled=not can_think, help="The model thinks before it answers (or, for a database, before it writes the SQL), and the page shows it. Slower.")
@@ -265,9 +265,9 @@ with st.sidebar:
 
 def mark_good(trace: dict, schema: str, saved: dict, pair: tuple[str, str], key: str) -> None:
     """The thumbs-up under a database answer: save the question and its SQL as an example, or, when it is
-    already saved and on, take it away again."""
+    already saved, take it away again."""
     existing = saved.get(pair)
-    pressed = existing is not None and existing["enabled"]
+    pressed = existing is not None
     if st.button(
         "Marked as a good answer" if pressed else "Good answer",
         key=key,

@@ -3,7 +3,7 @@ from pathlib import Path
 import psycopg
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
-_LOCK_ID = 727274  # concurrent Dagster runs may all call this at start-up
+_LOCK_ID = 727274  # two callers at once (python -m rag_lab.setup run twice) apply each file once
 
 
 def apply_migrations(database_url: str) -> list[str]:

@@ -15,7 +15,6 @@ from rag_lab.agent.printer import chat_loop, env
 from rag_lab.agent.sql import SqlFlow, build_graph, remembered
 from rag_lab.config import SqlAgentConfig
 from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.migrate import apply_migrations
 from rag_lab.metrics.store import MetricsStore
 from rag_lab.storage.qdrant import QdrantStore
 
@@ -44,9 +43,8 @@ def main(args) -> None:
     cfg = SqlAgentConfig(**overrides)
     base_url = env("OLLAMA_BASE_URL")
     database_url = env("METRICS_DATABASE_URL")
-    apply_migrations(database_url)
     metrics = MetricsStore(database_url)
     if not metrics.get_db_schema(args.schema):
-        sys.exit(f"There is no schema '{args.schema}'. Import a CSV file into one on the Database page.")
+        sys.exit(f"There is no schema '{args.schema}'.")
     graph = build_graph(metrics, args.schema, base_url, cfg, OllamaEmbedder(base_url), QdrantStore(env("QDRANT_URL")))
     chat_loop(graph, SqlFlow(args.schema, cfg), metrics, args.question, _remember)

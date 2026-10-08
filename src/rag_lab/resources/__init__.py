@@ -1,6 +1,6 @@
 """Thin Dagster wrappers around the plain clients. Search and other non-Dagster code use the clients directly."""
 
-from dagster import ConfigurableResource, InitResourceContext
+from dagster import ConfigurableResource
 
 from rag_lab.config import (
     ChunkConfig,
@@ -10,7 +10,6 @@ from rag_lab.config import (
     ParseConfig,
 )
 from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.migrate import apply_migrations
 from rag_lab.metrics.store import MetricsStore
 from rag_lab.storage.qdrant import QdrantStore
 
@@ -24,7 +23,6 @@ class ExperimentResource(ConfigurableResource):
     chunk: ChunkConfig = ChunkConfig()
     embed: EmbedConfig = EmbedConfig()
     index: IndexConfig = IndexConfig()
-    tag: str | None = None  # set for an experiment made on the Upload page: its hash includes it
 
     def config(self) -> ExperimentConfig:
         return ExperimentConfig(
@@ -33,7 +31,6 @@ class ExperimentResource(ConfigurableResource):
             chunk=self.chunk,
             embed=self.embed,
             index=self.index,
-            tag=self.tag,
         )
 
 
@@ -55,9 +52,6 @@ class QdrantResource(ConfigurableResource):
 
 class MetricsStoreResource(ConfigurableResource):
     database_url: str
-
-    def setup_for_execution(self, context: InitResourceContext) -> None:
-        apply_migrations(self.database_url)
 
     def store(self) -> MetricsStore:
         return MetricsStore(self.database_url)

@@ -30,8 +30,6 @@ def _title(entry: dict) -> str:
         flags.append("no experiment row")
     if not entry["has_collection"]:
         flags.append("no collection")
-    if entry["in_report"]:
-        flags.append("in a benchmark report")
     return " · ".join(parts) + (f"  ({', '.join(flags)})" if flags else "")
 
 
@@ -52,13 +50,12 @@ def _confirm(entry: dict, pending: dict) -> None:
         label = doc["source_file"] or doc["doc_id"]
         st.warning(
             f"Remove “{label}” from “{name}”? This deletes its {doc['points']} points and its files in this "
-            "experiment. The uploaded PDF stays. This cannot be undone."
+            "experiment. The PDF in data/raw stays. This cannot be undone."
         )
     elif entry["has_row"]:
         st.warning(
             f"Delete the experiment “{name}”? This deletes its collection ({entry['points']} points in "
             f"{len(entry['documents'])} document(s)), its files and its records. This cannot be undone."
-            + (" It belongs to a benchmark report: the report stays, but its numbers were measured with this experiment." if entry["in_report"] else "")
         )
     else:
         st.warning(f"Delete the collection “{name}”? It has no experiment record. This cannot be undone.")
@@ -84,7 +81,7 @@ def _confirm(entry: dict, pending: dict) -> None:
             st.error(f"The delete failed: {e}. Nothing after the failed step was changed; press Delete again to retry.")
             return
         _clear_ask()
-        st.cache_data.clear()  # "Try a query" caches its experiment list
+        st.cache_data.clear()  # the Chatbot caches its experiment list
         st.session_state["experiments_message"] = message
         st.rerun()
 
@@ -125,7 +122,7 @@ if message:
 
 entries = list_library(metrics, qdrant)
 if not entries:
-    st.info("No experiments yet. Upload a document or run a benchmark.")
+    st.info("No experiments yet. Put a PDF in data/raw and Dagster ingests it.")
     st.stop()
 
 with_row = [e for e in entries if e["has_row"]]

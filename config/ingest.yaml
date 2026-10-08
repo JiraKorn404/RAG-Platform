@@ -4,7 +4,7 @@
 # The keys are those of the experiment config (src/rag_lab/config.py: ExperimentConfig). A key left out
 # keeps its default; an unknown key is an error, shown on the sensor in the Dagster UI.
 # Settings cannot change under the same name: to change one, change `name` too (a new experiment).
-name: test-ingest-multimodal
+name: test-ingest
 
 parse:
   ocr: false          # true: scanned pages are read with glm-ocr (about 18 s a page)
@@ -15,7 +15,7 @@ chunk:
   max_tokens: 512
 
 embed:
-  qwen3-embedding:0.6b, qwen3-embedding:4b, qwen3-embedding:8b, embeddinggemma-2:740m 
+  # qwen3-embedding:0.6b, qwen3-embedding:4b, qwen3-embedding:8b or embeddinggemma-2:740m
   model: embeddinggemma-2:740m
 
 index:

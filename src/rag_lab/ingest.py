@@ -1,30 +1,21 @@
-"""The stage bodies that both the Dagster assets and the Streamlit upload page run. Plain Python, no
-Dagster: the assets wrap these and keep only what is Dagster's (partition key, Failure, run id,
-MaterializeResult)."""
+"""The stage bodies the Dagster assets run. Plain Python, no Dagster: the assets wrap these and keep
+only what is Dagster's (partition key, Failure, run id, MaterializeResult)."""
 
-import dataclasses
-import hashlib
 import json
-import re
-import shutil
 import time
-from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-from pydantic import ValidationError
 
-from rag_lab.chunking.models import Chunk, read_chunks, write_chunks
-from rag_lab.config import NAME_PATTERN, ExperimentConfig, ParseConfig
+from rag_lab.chunking.models import read_chunks
+from rag_lab.config import ExperimentConfig
 from rag_lab.embedding.ollama import OllamaEmbedder
 from rag_lab.embedding.sparse import document_vectors
 from rag_lab.metrics.store import MetricsStore
-from rag_lab.parsing.parse import ParsedDocument, parse_pdf
-from rag_lab.parsing.pictures import pictures_dir
-from rag_lab.paths import DATA_DIR, artifacts_dir
+from rag_lab.parsing.parse import ParsedDocument
+from rag_lab.paths import artifacts_dir
 from rag_lab.storage.qdrant import QdrantStore, to_point_id
 
 # Below this many extracted characters per page, the PDF is almost certainly scanned images.
@@ -38,7 +29,11 @@ class IngestError(Exception):
 
 
 def register_experiment(store: MetricsStore, config: ExperimentConfig) -> str:
-    """Record the experiment's settings under its name; returns the config hash."""
+    """Record the experiment's settings under its name; returns the config hash. A name that
+    already has other settings is refused."""
+    problem = experiment_conflict(store, config)
+    if problem:
+        raise IngestError(problem)
     config_hash = config.config_hash()
     store.upsert_experiment(config_hash, config.name, config.model_dump(mode="json"))
     return config_hash
@@ -55,115 +50,6 @@ def experiment_conflict(store: MetricsStore, config: ExperimentConfig) -> str | 
         f"An experiment named '{config.name}' already exists with other settings. Settings cannot change "
         "under the same name: choose a new `name` (a new experiment), or put the settings back."
     )
-
-
-def check_new_experiment_name(store: MetricsStore, qdrant: QdrantStore, name: str) -> str | None:
-    """Why `name` cannot be used for a new experiment, or None if it can. A name only has to be unused:
-    the settings may equal another experiment's, because a new experiment made on the Upload page is
-    tagged with its name and so has a hash of its own."""
-    if not re.fullmatch(NAME_PATTERN, name):
-        return "The name may only contain lower-case letters, digits, - and _, and must start with a letter or digit."
-    if store.get_experiment(name) is not None:
-        return f"'{name}' is already an experiment. Choose another name, or add the document to it."
-    if qdrant.client.collection_exists(name):
-        return f"A Qdrant collection called '{name}' already exists. Choose another name."
-    return None
-
-
-def experiments_with_settings(store: MetricsStore, qdrant: QdrantStore, settings_hash: str) -> list[dict]:
-    """The experiments a document with these settings can be added to: those whose settings are the
-    same, whatever their name and tag. Each row has `name`, `config_hash`, `config`, `documents`,
-    `benchmarked` and `points` (None when it has no collection yet).
-
-    An untagged row's stored hash is its settings hash, which also covers rows from before `engine`
-    existed (their config has no `engine` key, so rebuilding it would give a different hash). A tagged
-    row was made by the Upload page, so its config is complete and its settings hash is recomputed."""
-    found = []
-    for row in store.list_experiments():
-        if row["config"].get("tag"):
-            try:
-                same = ExperimentConfig.model_validate(row["config"]).settings_hash()
-            except ValidationError:
-                continue
-        else:
-            same = row["config_hash"]
-        if same == settings_hash:
-            exists = qdrant.client.collection_exists(row["name"])
-            found.append({**row, "points": qdrant.count(row["name"]) if exists else None})
-    return found
-
-
-def save_upload(name: str, content: bytes) -> tuple[str, Path]:
-    """Save an uploaded file as data/uploads/<doc_id>/<name> (not data/raw, so the sensor does not
-    register it). The document id is the content hash, as everywhere else."""
-    doc_id = hashlib.sha256(content).hexdigest()[:16]
-    path = DATA_DIR / "uploads" / doc_id / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    return doc_id, path
-
-
-def ensure_parsed(
-    path: Path,
-    doc_id: str,
-    ocr: bool = False,
-    ollama_url: str | None = None,
-    on_ocr_page: Callable[[int, int], None] = lambda done, total: None,
-) -> tuple[Path, dict]:
-    """The Docling parse of an uploaded document with default settings, made once and kept in
-    data/artifacts/_uploads/<doc_id>/, or in its `ocr` folder for the parse with OCR (the other
-    settings still the defaults). Returns that folder and the parse metadata."""
-    parse_dir = artifacts_dir("_uploads", f"{doc_id}/ocr" if ocr else doc_id)
-    meta_path = parse_dir / f"{doc_id}.meta.json"
-    if not (parse_dir / f"{doc_id}.json").exists() or not meta_path.exists():
-        parse_pdf(path, doc_id, ParseConfig(ocr=ocr), parse_dir, ollama_url, on_ocr_page)
-    return parse_dir, json.loads(meta_path.read_text(encoding="utf-8"))
-
-
-def ingest_document(
-    metrics: MetricsStore,
-    embedder: OllamaEmbedder,
-    qdrant: QdrantStore,
-    config: ExperimentConfig,
-    doc_id: str,
-    source_name: str,
-    parse_dir: Path,
-    meta: dict,
-    chunks: list[Chunk],
-    summary: dict,
-    stats: dict,
-    warnings: list[str],
-    seconds: float,
-    register: bool = True,
-    on_step: Callable[[str], None] = lambda step: None,
-) -> tuple[dict, dict]:
-    """Put an already chunked, already parsed document into an experiment: the parse and chunk files
-    under data/artifacts/<experiment>/, the experiment row (when `register`) and the parse and chunk
-    metric rows, then embed and index. Returns the embed and index numbers. `on_step` is told what
-    is about to happen, so a caller can show it or say which step failed."""
-    name = config.name
-    on_step("copying the parse files")
-    target = artifacts_dir(name, "parse")
-    for suffix in (".json", ".md"):
-        shutil.copy(parse_dir / f"{doc_id}{suffix}", target / f"{doc_id}{suffix}")
-    if config.parse.pictures:
-        shutil.copytree(parse_dir / pictures_dir(doc_id), target / pictures_dir(doc_id), dirs_exist_ok=True)
-    stored = {**meta, "source_file": source_name}
-    (target / f"{doc_id}.meta.json").write_text(json.dumps(stored, indent=2), encoding="utf-8")
-
-    on_step("recording the experiment, the parse and the chunks")
-    write_chunks(chunks, artifacts_dir(name, "chunk") / f"{doc_id}.chunks.jsonl")
-    if register:
-        register_experiment(metrics, config)
-    fields = {f.name for f in dataclasses.fields(ParsedDocument)}
-    record_parse(metrics, config, doc_id, ParsedDocument(**{k: v for k, v in stored.items() if k in fields}))
-    record_chunk(metrics, config, doc_id, summary, stats, warnings, seconds)
-
-    on_step("embedding the chunks")
-    embedded = embed_chunks(metrics, embedder, config, doc_id)
-    on_step("writing the points to Qdrant")
-    indexed = index_chunks(metrics, qdrant, config, doc_id)
-    return embedded, indexed
 
 
 def record_parse(
@@ -214,7 +100,6 @@ def record_chunk(
         throughput=summary["chunks"] / seconds if seconds else None,
         details={
             "strategy": config.chunk.strategy,
-            "engine": config.chunk.engine,
             **summary,
             **stats,
             "warnings": warnings,
@@ -389,8 +274,3 @@ def index_chunks(
     )
     return details
 
-
-def clean_experiment_name(text: str) -> str:
-    """A string turned into something that matches the experiment name pattern."""
-    name = re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-_")
-    return name[:60] or "upload"

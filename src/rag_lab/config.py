@@ -31,21 +31,17 @@ class ParseConfig(_Section):
     # How long Docling may take on one document: `document_timeout`, or `page_timeout` for each of its
     # pages when that is longer (a 444-page book took 3 to 7 s a page here, more when the machine is
     # busy, so 600 s cut it at page 38). A parse that runs out of time fails; it is never kept in part.
-    # `page_timeout` is left out of the config hash while it is the default.
     document_timeout: float = 600.0
     page_timeout: float = 20.0
     # Our OCR (parsing/ocr.py): a region Docling's layout found but that has no text layer is cropped
-    # from the page image and read by a vision model on Ollama. A page with a text layer keeps it. The
-    # `ocr*` settings are left out of the config hash while `ocr` is false, so the hashes of experiments
-    # made before it existed are unchanged.
+    # from the page image and read by a vision model on Ollama. A page with a text layer keeps it.
     ocr: bool = False
     ocr_model: str = "glm-ocr:bf16"
     ocr_scale: float = 2.0  # page image pixels per PDF point (2.0 is 144 dpi)
     ocr_max_tokens: int = 4096  # per region; a region that reaches it is counted as cut
     ocr_keep_alive: str = "30m"
     # Pictures (parsing/pictures.py): each picture Docling found is cropped from the rendered page and
-    # kept as a file, and becomes a chunk of its own (chunking/pictures.py). The `picture*` settings
-    # are left out of the config hash while `pictures` is false.
+    # kept as a file, and becomes a chunk of its own (chunking/pictures.py).
     pictures: bool = False
     picture_scale: float = 2.0  # pixels per PDF point in the saved picture
     picture_min_side: float = 50.0  # PDF points; a picture with a shorter side (a rule, a logo) is left out
@@ -55,28 +51,17 @@ class HybridSettings(_Section):
     merge_peers: bool = True  # merge undersized neighbours that share the same headings
 
 
-class RecursiveSettings(_Section):
-    # Tried in order; a piece is split with the next separator only while it is over the limit.
-    separators: list[str] = ["\n\n", "\n", ". ", " "]
-
-
 class SemanticSettings(_Section):
     buffer_size: int = 1  # sentences on each side that are embedded together with a sentence
-    breakpoint_type: Literal["percentile", "stddev", "absolute"] = "percentile"
-    # percentile: 0-100 (default 90). stddev: multiples of the standard deviation above the mean
-    # (try 1.0). absolute: a cosine distance (try 0.3). The default only suits "percentile".
+    # A cut is made where the distance between neighbouring sentences is above this percentile
+    # (0-100) of the distances in the section.
     breakpoint_threshold: float = 90.0
-    min_tokens: int = 64  # smaller chunks are merged into their neighbour
     # Sentence boundary: end punctuation plus whitespace, or a blank line. Not suited to
     # languages without sentence-final punctuation (Thai, for example).
     sentence_pattern: str = r"(?<=[.!?])\s+|\n{2,}"
 
 
 class ChunkConfig(_Section):
-    # Which implementation runs the strategy. `llamaindex` uses LlamaIndex's splitters, which differ
-    # from ours in a few settings (see chunking/llamaindex.py); `native` is the original code. A config
-    # that does not say is `llamaindex`, so experiments run before the default changed need `native`.
-    engine: Literal["native", "llamaindex"] = "llamaindex"
     strategy: Literal["hybrid", "hierarchical", "fixed", "recursive", "semantic"] = "hybrid"
     max_tokens: int = 512
     overlap: int = 0  # tokens; only the `fixed` strategy uses it
@@ -86,7 +71,6 @@ class ChunkConfig(_Section):
     include_headings_in_text: bool = True
     # Settings for the chosen strategy only; the others are ignored (and left out of the hash).
     hybrid: HybridSettings = HybridSettings()
-    recursive: RecursiveSettings = RecursiveSettings()
     semantic: SemanticSettings = SemanticSettings()
 
 
@@ -142,15 +126,14 @@ class EmbedConfig(_Section):
     query_instruction: str = (
         "Given a question, retrieve relevant passages from the documents that answer it"
     )
-    # How a query and a document are written before they are embedded. The defaults are Qwen3's, and
-    # are left out of the config hash, so the hashes of experiments made before they existed are
-    # unchanged. Another family needs its own (see EMBED_FAMILIES and `for_model`): the wrong ones still
-    # give vectors, only worse ones.
+    # How a query and a document are written before they are embedded. The defaults are Qwen3's.
+    # Another family needs its own (see EMBED_FAMILIES and `for_model`): the wrong ones still give
+    # vectors, only worse ones.
     query_template: str = "Instruct: {instruction}\nQuery: {text}"
     document_template: str = "{text}"
     # What a picture chunk is embedded from: the image with its text (its caption) as one input, the
     # image alone, or the text alone (which needs no model that takes images, and is the baseline that
-    # says whether the image adds anything). Only used, and only in the config hash, with `parse.pictures`.
+    # says whether the image adds anything). Only used with `parse.pictures`.
     picture_input: Literal["image+caption", "image", "caption"] = "image+caption"
     keep_alive: str = "30m"
 
@@ -174,9 +157,9 @@ class IndexConfig(_Section):
     hnsw_m: int = 16
     hnsw_ef_construct: int = 100
     hnsw_ef: int | None = None  # search-time ef; None uses the Qdrant default
-    # Also store a BM25 sparse vector on every point, which the hybrid search methods need. Left out
-    # of the config hash while false, so the hashes of experiments made before it existed are unchanged.
-    sparse: bool = False
+    # Also store a BM25 sparse vector on every point, which the hybrid search methods and the chatbot
+    # need. It cannot be added to a collection later.
+    sparse: bool = True
 
 
 SearchMethod = Literal["dense", "hybrid", "dense+rerank", "hybrid+rerank"]
@@ -288,11 +271,6 @@ class ExperimentConfig(_Section):
     chunk: ChunkConfig = ChunkConfig()
     embed: EmbedConfig = EmbedConfig()
     index: IndexConfig = IndexConfig()
-    # When set, part of the config hash, so the same settings under another tag are a separate
-    # experiment (the Upload page tags the experiments it creates with their name). Empty is left out
-    # of the hash, which keeps every hash from before `tag` existed.
-    tag: str | None = None
-
     @model_validator(mode="after")
     def _pictures_need_a_model_that_takes_images(self):
         if self.parse.pictures and self.embed.picture_input != "caption":
@@ -310,51 +288,24 @@ class ExperimentConfig(_Section):
         return self.name
 
     def config_hash(self) -> str:
-        """Identifies the experiment: its settings and its tag, not its name. Experiments without a tag
-        and with the same settings share a hash."""
-        return self._hash(with_tag=True)
-
-    def settings_hash(self) -> str:
-        """Identifies the settings alone: the same for every name and tag."""
-        return self._hash(with_tag=False)
-
-    def _hash(self, with_tag: bool) -> str:
-        data = self.model_dump(mode="json", exclude={"name"})
-        for strategy in ("hybrid", "recursive", "semantic"):
+        """Identifies the experiment: its name and every setting. The settings of the chunking
+        strategies that are not chosen are left out, so editing them does not make a new experiment."""
+        data = self.model_dump(mode="json")
+        for strategy in ("hybrid", "semantic"):
             if strategy != self.chunk.strategy:
-                data["chunk"].pop(strategy)  # unused strategy settings do not identify the experiment
-        if self.chunk.engine == "native":
-            data["chunk"].pop("engine")  # keeps the hashes of the experiments run before `engine` existed
-        if not self.index.sparse:
-            data["index"].pop("sparse")  # keeps the hashes of the experiments made before `sparse` existed
-        if data["parse"]["page_timeout"] == ParseConfig.model_fields["page_timeout"].default:
-            data["parse"].pop("page_timeout")  # keeps the hashes of the experiments made before it existed
-        if not self.parse.ocr:
-            for key in [k for k in data["parse"] if k.startswith("ocr")]:
-                data["parse"].pop(key)  # keeps the hashes of the experiments made before OCR existed
-        for key in ("query_template", "document_template"):
-            if data["embed"][key] == EmbedConfig.model_fields[key].default:
-                data["embed"].pop(key)  # keeps the hashes of the experiments made before the templates existed
-        if not self.parse.pictures:  # keeps the hashes of the experiments made before pictures existed
-            for key in [k for k in data["parse"] if k.startswith("picture")]:
-                data["parse"].pop(key)
-            data["embed"].pop("picture_input")
-        if not (with_tag and self.tag):
-            data.pop("tag")
+                data["chunk"].pop(strategy)
         payload = json.dumps(data, sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def load_experiment_file(path: str | Path) -> ExperimentConfig:
     """An experiment written as YAML (config/ingest.yaml): the keys of ExperimentConfig, where a key
-    left out keeps its default and an unknown key is an error. Two things are filled in, as the pages
-    do: `tag` is the name unless given, so the experiment has a hash of its own, and a model named
-    under `embed` brings its family's tokenizer and templates unless the file sets them. A model of
-    no known family is refused unless the file sets all three itself."""
+    left out keeps its default and an unknown key is an error. A model named under `embed` brings its
+    family's tokenizer and templates unless the file sets them; a model of no known family is refused
+    unless the file sets all three itself."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path}: expected settings as `key: value`, found {type(data).__name__}")
-    data.setdefault("tag", data.get("name"))
     embed = data.get("embed")
     if isinstance(embed, dict) and "model" in embed:
         family = embed_family(str(embed["model"]))

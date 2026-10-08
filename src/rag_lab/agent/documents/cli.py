@@ -13,7 +13,6 @@ from rag_lab.agent.documents.graph import DocumentsFlow, build_graph
 from rag_lab.agent.printer import chat_loop, env
 from rag_lab.config import AgentConfig
 from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.migrate import apply_migrations
 from rag_lab.metrics.store import MetricsStore
 from rag_lab.reranking import OllamaReranker
 from rag_lab.search import load_experiment
@@ -44,7 +43,6 @@ def main(args) -> None:
 
     base_url = env("OLLAMA_BASE_URL")
     database_url = env("METRICS_DATABASE_URL")
-    apply_migrations(database_url)
     metrics = MetricsStore(database_url)
     try:
         _, experiment = load_experiment(metrics, args.experiment)

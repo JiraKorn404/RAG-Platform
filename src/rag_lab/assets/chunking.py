@@ -54,7 +54,6 @@ def chunks(
         metadata={
             "experiment": config.name,
             "strategy": config.chunk.strategy,
-            "engine": config.chunk.engine,
             "chunks": summary["chunks"],
             "by_modality": MetadataValue.json(summary["by_modality"]),
             "tokens_min": summary["tokens_min"],

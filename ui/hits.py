@@ -1,4 +1,4 @@
-"""The card that shows one retrieved chunk, shared by Try a query and the Chatbot."""
+"""The card that shows one retrieved chunk."""
 
 import base64
 import html

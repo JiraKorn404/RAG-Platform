@@ -12,11 +12,6 @@ class Tokens:
     def count(self, text: str) -> int:
         return len(self.hf.encode(text, add_special_tokens=False))
 
-    def offsets(self, text: str) -> list[tuple[int, int]]:
-        """(start, end) character span of every token."""
-        enc = self.hf(text, add_special_tokens=False, return_offsets_mapping=True)
-        return [tuple(o) for o in enc["offset_mapping"]]
-
 
 @lru_cache(maxsize=4)
 def load_tokenizer(name: str) -> Tokens:

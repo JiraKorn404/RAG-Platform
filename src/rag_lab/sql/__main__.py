@@ -1,12 +1,9 @@
-"""CLI: python -m rag_lab.sql bootstrap | schema --schema <name> | examples [--schema <name>] [--reindex]
+"""CLI: python -m rag_lab.sql schema --schema <name> | examples [--schema <name>] [--reindex]
 
-`bootstrap` makes sure the database for imported tables, its roles and their limits exist, and prints
-what it had to create. `schema` prints exactly what the text-to-SQL agent is given about a schema, with
-its size against the budget. `examples` lists the good answers saved for a schema (every schema without
-`--schema`); with `--reindex` it rebuilds their Qdrant collections from the table (needs OLLAMA_BASE_URL and
-QDRANT_URL). They need METRICS_DATABASE_URL (the admin credentials, for `bootstrap`), and
-SQL_LOADER_URL and SQL_READER_URL (for `bootstrap`) in the environment (already set inside the
-dagster-code and ui containers)."""
+`schema` prints exactly what the text-to-SQL agent is given about a schema, with its size against the
+budget. `examples` lists the good answers saved for a schema (every schema without `--schema`); with
+`--reindex` it rebuilds their Qdrant collections from the table (needs OLLAMA_BASE_URL and QDRANT_URL).
+Both need METRICS_DATABASE_URL in the environment (already set inside the containers)."""
 
 import argparse
 import os
@@ -14,16 +11,9 @@ import sys
 
 from rag_lab.config import SqlAgentConfig
 from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.migrate import apply_migrations
 from rag_lab.metrics.store import MetricsStore
 from rag_lab.sql import catalog, examples
-from rag_lab.sql.bootstrap import ensure_database
 from rag_lab.storage.qdrant import QdrantStore
-
-
-def bootstrap(args) -> None:
-    done = ensure_database()
-    print("\n".join(done) if done else "Nothing to do: the database and its roles are in place.")
 
 
 def schema(args) -> None:
@@ -39,7 +29,6 @@ def schema(args) -> None:
 
 
 def list_examples(args) -> None:
-    apply_migrations(os.environ["METRICS_DATABASE_URL"])
     metrics = MetricsStore(os.environ["METRICS_DATABASE_URL"])
     if args.reindex:
         base_url, qdrant = os.environ["OLLAMA_BASE_URL"], QdrantStore(os.environ["QDRANT_URL"])
@@ -49,14 +38,13 @@ def list_examples(args) -> None:
     found = metrics.list_sql_examples(args.schema)
     for e in found:
         first_line = " ".join(e["sql"].split())[:90]
-        print(f"#{e['id']} {e['schema_name']} {'on ' if e['enabled'] else 'OFF'} {e['created_at']:%Y-%m-%d %H:%M}  {e['standalone']}\n      {first_line}")
+        print(f"#{e['id']} {e['schema_name']} {e['created_at']:%Y-%m-%d %H:%M}  {e['standalone']}\n      {first_line}")
     print(f"{len(found)} example(s)")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m rag_lab.sql", description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("bootstrap", help="create the database and its roles if missing").set_defaults(main=bootstrap)
     show = commands.add_parser("schema", help="print what the model is given about a schema")
     show.add_argument("--schema", required=True)
     show.set_defaults(main=schema)

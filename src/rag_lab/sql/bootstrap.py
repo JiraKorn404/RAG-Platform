@@ -2,8 +2,7 @@
 again: it creates only what is missing and changes nothing when everything is there.
 
 It runs as the admin role (the credentials in METRICS_DATABASE_URL) and is the only thing that does. It
-is called when the UI starts and by `python -m rag_lab.sql bootstrap`. The init script that creates
-`rag_metrics` only runs on a new volume, so it could not do this for a database that already exists."""
+is called by `python -m rag_lab.setup`, which the `setup` service runs when the stack starts."""
 
 import os
 
