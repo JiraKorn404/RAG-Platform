@@ -4,37 +4,29 @@ import base64
 import html
 import io
 from functools import lru_cache
-from pathlib import Path
 
+import data
 from PIL import Image
-
-from rag_lab.paths import DATA_DIR
 
 PICTURE_WIDTH = 560  # pixels; a picture is drawn no wider than this
 
 
 @lru_cache(maxsize=256)
-def picture_html(path: Path) -> str:
-    """An <img> of a picture chunk's file, scaled down and inlined, or nothing when the file is gone
-    (its experiment was deleted, for example)."""
+def picture_html(image: str) -> str:
+    """An <img> of a picture chunk (`Hit.image`, fetched from the API), scaled down and inlined, or
+    nothing when the file is gone (its experiment was deleted, for example)."""
+    content = data.picture(image)
+    if content is None:
+        return ""
     try:
-        image = Image.open(path).convert("RGB")
-        image.thumbnail((PICTURE_WIDTH, PICTURE_WIDTH))
+        picture = Image.open(io.BytesIO(content)).convert("RGB")
+        picture.thumbnail((PICTURE_WIDTH, PICTURE_WIDTH))
         buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=80)  # a PNG of this size is ten times the bytes
+        picture.save(buffer, format="JPEG", quality=80)  # a PNG of this size is ten times the bytes
     except OSError:
         return ""
-    data = base64.b64encode(buffer.getvalue()).decode()
-    return f'<img class="picture" src="data:image/jpeg;base64,{data}" alt="picture">'
-
-
-def hit_picture(hit) -> str:
-    """The picture of a picture hit. `hit.image` is relative to data/artifacts and must stay inside it."""
-    if not getattr(hit, "image", None):
-        return ""
-    root = (DATA_DIR / "artifacts").resolve()
-    path = (root / hit.image).resolve()
-    return picture_html(path) if root in path.parents and path.suffix == ".png" else ""
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    return f'<img class="picture" src="data:image/jpeg;base64,{encoded}" alt="picture">'
 
 
 def hit_card(hit, color: str, cited: bool = False, seen: bool = False) -> str:
@@ -55,7 +47,7 @@ def hit_card(hit, color: str, cited: bool = False, seen: bool = False) -> str:
         + ('<span class="badge picture">image given to the model</span>' if seen else "")
         + "</div>"
         + (f'<div class="heading">{html.escape(" › ".join(hit.headings))}</div>' if hit.headings else "")
-        + hit_picture(hit)
+        + (picture_html(hit.image) if getattr(hit, "image", None) else "")
         + f'<div class="snippet">{snippet}</div>'
         f"<details><summary>Full text</summary><pre>{html.escape(hit.text)}</pre></details></div>"
     )

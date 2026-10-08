@@ -7,7 +7,7 @@ import streamlit as st
 import style
 from hits import hit_card
 
-from rag_lab.agent.events import (
+from rag_lab.core.events import (
     Done,
     ExamplesFound,
     Graded,
@@ -23,7 +23,6 @@ from rag_lab.agent.events import (
     Thinking,
     from_dict,
 )
-from rag_lab.agent.sql import remembered
 
 STEP_NAMES = {
     "condense": "Reading the question",
@@ -105,17 +104,6 @@ def messages_from(turns: list[dict]) -> list[dict]:
             {"role": "assistant", "trace": trace_from_turn(turn)},
         ]
     return messages
-
-
-def history_of(messages: list[dict]) -> list[tuple[str, str]]:
-    """The answered turns as the agent's history; a failed turn has no answer to remember. A database
-    answer is remembered with the SQL that produced it, so a follow-up can be understood."""
-    history = []
-    for user, assistant in zip(messages[::2], messages[1::2]):
-        trace = assistant["trace"]
-        if not trace["error"]:
-            history += [("User", user["content"]), ("Assistant", remembered(trace["done"].answer, trace["sql"]))]
-    return history
 
 
 def state_line(s: ModelState) -> str:
@@ -258,7 +246,7 @@ def show_trace(trace: dict) -> None:
             else:
                 st.caption("The number on a card is the passage number the answer cites. Score: the reranker's probability that the chunk answers the question.")
                 cited = done.cited if done else []
-                # the pictures the model was given: the rule of agent.documents.graph.shown_pictures
+                # the pictures the model was given: the rule of serve/chat_documents.py: shown_pictures
                 settings = trace["settings"] or {}
                 pictures = [h.rank for h in retrieved.hits if h.image] if settings.get("show_pictures") else []
                 seen = set(pictures[: settings.get("max_pictures", 0)])

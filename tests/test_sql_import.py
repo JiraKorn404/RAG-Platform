@@ -1,4 +1,4 @@
-from rag_lab.sql.importer import clean_identifier, clean_names, infer_type, parse_sample, sniff_delimiter
+from rag_lab.ingest.importer import clean_identifier, clean_names, infer_type, parse_sample, sniff_delimiter
 
 
 def test_clean_identifier_makes_a_plain_name():

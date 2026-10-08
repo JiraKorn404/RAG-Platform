@@ -1,6 +1,6 @@
 import pytest
 
-from rag_lab.sql.guard import Refused, guard
+from rag_lab.serve.guard import Refused, guard
 
 SCHEMA, TABLES, MAX_ROWS = "shop", ["orders", "customers"], 201
 

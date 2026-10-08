@@ -1,67 +1,83 @@
-x-dagster-env: &dagster-env
-  DAGSTER_HOME: /opt/dagster/dagster_home
+# Our services only. PostgreSQL and Qdrant are not here: on this machine docker-compose.local.yml adds
+# them, and on the VM docker-compose.vm.yml joins the network of the ones that already run. `.env` names
+# the files to use in COMPOSE_FILE, so `docker compose up -d` is the command on both.
+#
+# Every service gets the whole of .env (passwords and addresses, which config/connections.yaml refers
+# to as ${NAME}, and what docker/dagster.yaml reads), so a new variable is added in .env only.
+
+x-env: &env
   DATA_DIR: /app/data
-  # The settings: connections.yaml, pipeline.yaml and llm.yaml (see src/rag_lab/settings.py).
+  # The settings: connections.yaml, pipeline.yaml and llm.yaml (see src/rag_lab/core/settings.py).
   RAG_CONFIG_DIR: /app/config
+
+x-dagster-env: &dagster-env
+  <<: *env
+  DAGSTER_HOME: /opt/dagster/dagster_home
   # LlamaIndex's sentence splitter downloads NLTK data on first use; keep it in the model_cache volume.
   NLTK_DATA: /root/.cache/nltk_data
-  # What config/connections.yaml refers to as ${NAME}. They come from .env, so passwords and private
-  # addresses stay out of git. Dagster's own storage (docker/dagster/dagster.yaml) reads POSTGRES_* too.
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
-  POSTGRES_USER: ${POSTGRES_USER}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  SQL_LOADER_PASSWORD: ${SQL_LOADER_PASSWORD}
-  SQL_READER_PASSWORD: ${SQL_READER_PASSWORD}
 
 services:
-  postgres:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: dagster
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d dagster"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # Named volume only: a Windows bind mount can corrupt Qdrant's data.
-  qdrant:
-    image: qdrant/qdrant:v1.19.1
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-
-  # Runs once when the stack starts and exits: creates our two databases if they are missing, applies
-  # the migrations and makes the roles (src/rag_lab/setup.py). The UI and Dagster wait for it.
+  # Runs once when the stack starts and exits: checks that the databases can be reached and applies our
+  # migrations (src/rag_lab/core/setup.py). The others wait for it. It creates no database and no role:
+  # that is scripts/provision.sql.
   setup:
     build:
       context: .
-      dockerfile: docker/dagster/Dockerfile
-    image: rag-platform:latest
-    command: python -m rag_lab.setup
-    environment: *dagster-env
+      dockerfile: docker/serve.Dockerfile
+    image: rag-platform-serve:latest
+    command: python -m rag_lab setup
+    env_file: .env
+    environment: *env
     volumes:
       - ./src:/app/src
       - ./config:/app/config:ro
+
+  # The HTTP API (src/rag_lab/serve/api.py): what the UI and the platform's backend call.
+  api:
+    image: rag-platform-serve:latest
+    restart: unless-stopped
+    command: uvicorn rag_lab.serve.api:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment: *env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config:ro
+      # The pictures of picture chunks are read from data/artifacts, and deleting a document or an
+      # experiment removes its files there.
+      - ./data:/app/data
     depends_on:
-      postgres:
-        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+
+  # The Streamlit app: the Experiments page and the Chatbot. It only talks to the API.
+  ui:
+    image: rag-platform-serve:latest
+    restart: unless-stopped
+    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+    working_dir: /app/ui # so Streamlit finds ui/.streamlit/config.toml
+    env_file: .env
+    environment: *env
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./src:/app/src
+      - ./ui:/app/ui
+      - ./config:/app/config:ro
+    depends_on:
+      api:
+        condition: service_started
 
   # Our code as Dagster sees it: the assets, the jobs and the two sensors. Runs execute here.
   dagster-code:
-    image: rag-platform:latest
+    build:
+      context: .
+      dockerfile: docker/ingest.Dockerfile
+    image: rag-platform-ingest:latest
     restart: unless-stopped
-    command: dagster api grpc -h 0.0.0.0 -p 4000 -m rag_lab.definitions
+    command: dagster api grpc -h 0.0.0.0 -p 4000 -m rag_lab.ingest.definitions
+    env_file: .env
     environment: *dagster-env
     volumes:
       - ./src:/app/src
@@ -71,23 +87,22 @@ services:
       - model_cache:/root/.cache
       - dagster_storage:/opt/dagster/storage
       # The instance settings are mounted over the copy in the image, so an edit needs a restart, not a build.
-      - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
       setup:
         condition: service_completed_successfully
-      qdrant:
-        condition: service_started
 
   dagster-webserver:
-    image: rag-platform:latest
+    image: rag-platform-ingest:latest
     restart: unless-stopped
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
+    env_file: .env
     environment: *dagster-env
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - dagster_storage:/opt/dagster/storage
-      - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -96,43 +111,20 @@ services:
 
   # Ticks the sensors and starts the queued runs.
   dagster-daemon:
-    image: rag-platform:latest
+    image: rag-platform-ingest:latest
     restart: unless-stopped
     command: dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
+    env_file: .env
     environment: *dagster-env
     volumes:
       - dagster_storage:/opt/dagster/storage
-      - ./docker/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     depends_on:
       setup:
         condition: service_completed_successfully
       dagster-code:
         condition: service_started
 
-  # The Streamlit app: the Experiments page and the Chatbot.
-  ui:
-    image: rag-platform:latest
-    restart: unless-stopped
-    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
-    working_dir: /app/ui # so Streamlit finds ui/.streamlit/config.toml
-    environment: *dagster-env
-    ports:
-      - "127.0.0.1:8501:8501"
-    volumes:
-      - ./src:/app/src
-      - ./ui:/app/ui
-      - ./config:/app/config:ro
-      # The pictures of picture chunks are read from data/artifacts, and deleting a document or an
-      # experiment removes its files there.
-      - ./data:/app/data
-    depends_on:
-      setup:
-        condition: service_completed_successfully
-      qdrant:
-        condition: service_started
-
 volumes:
-  postgres_data:
-  qdrant_data:
   model_cache:
   dagster_storage:

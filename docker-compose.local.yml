@@ -1,0 +1,72 @@
+# For a machine that hosts its own databases: adds PostgreSQL and Qdrant to docker-compose.yml, prepares
+# PostgreSQL with scripts/provision.sql and makes our services wait for them. On the VM this file is not
+# used (see docker-compose.vm.yml).
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DAGSTER_POSTGRES_DB}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${DAGSTER_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Named volume only: a Windows bind mount can corrupt Qdrant's data.
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Runs once when the stack starts and exits: the script an admin runs by hand on the VM, run here as
+  # the local server's admin. It makes what is missing and can be run again. The names are the ones
+  # config/connections.yaml uses.
+  provision:
+    image: postgres:17
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./scripts:/scripts:ro
+    command: >
+      psql -h postgres -U ${POSTGRES_USER} -d postgres
+      -v app_role=${POSTGRES_USER} -v app_password=${POSTGRES_PASSWORD}
+      -v app_db=rag_metrics -v app_schema=rag
+      -v tables_db=rag_data
+      -v reader=rag_reader -v reader_password=${SQL_READER_PASSWORD}
+      -v loader=rag_loader -v loader_password=${SQL_LOADER_PASSWORD}
+      -v dagster_db=${DAGSTER_POSTGRES_DB}
+      -f /scripts/provision.sql
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  setup:
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  api:
+    depends_on:
+      qdrant:
+        condition: service_started
+
+  dagster-code:
+    depends_on:
+      qdrant:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  qdrant_data:

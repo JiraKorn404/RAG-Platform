@@ -7,7 +7,7 @@
 # in pipeline.yaml. Known families: qwen3-embedding (0.6b, 4b, 8b) and embeddinggemma-2 (740m, the one
 # that can also embed pictures).
 embedding:
-  model: embeddinggemma-2:740m
+  model: qwen3-embedding:0.6b
   dimension: null       # null keeps the model's own size; a smaller number cuts the vectors to it
 
 # Reads scanned pages when pipeline.yaml has `parse.ocr: true`.
@@ -21,7 +21,7 @@ reranker:
 
 # What both chats share. A chat's own section below may set any of these again for itself.
 chat:
-  model: gemma4:e4b-mlx
+  model: gemma4:e4b
   think: true           # the model thinks before it answers (or before it writes the SQL)
   keep_alive: 30m
   history_turns: 6      # earlier questions and answers a follow-up is read with

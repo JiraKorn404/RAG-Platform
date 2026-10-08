@@ -1,0 +1,2 @@
+# psql runs these inside a Linux container: a carriage return at the end of a line breaks its commands.
+scripts/*.sql text eol=lf

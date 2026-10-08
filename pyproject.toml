@@ -1,27 +1,40 @@
 [project]
 name = "rag-lab"
 version = "0.1.0"
-description = "A chatbot over PDF documents (Qdrant) and CSV tables (PostgreSQL), ingested by Dagster"
+description = "A chatbot over PDF documents (Qdrant) and tables (PostgreSQL), ingested by Dagster"
 requires-python = ">=3.12"
+# What both sides need (src/rag_lab/core). Each image adds one of the extras below.
 dependencies = [
+    "pydantic",
+    "pyyaml",  # the settings files in config/ (src/rag_lab/core/settings.py)
+    "psycopg[binary]",
+    "qdrant-client",
+    "httpx",
+]
+
+[project.optional-dependencies]
+# docker/ingest.Dockerfile: Dagster and the document pipeline (src/rag_lab/ingest).
+ingest = [
     "dagster",
     "dagster-webserver",
     "dagster-postgres",
     # SQLAlchemy 2.1 defaults postgresql:// to psycopg 3, which breaks dagster-postgres' NOTIFY.
     "sqlalchemy<2.1",
-    "qdrant-client",
-    "httpx",
-    "psycopg[binary]",
     "docling",
     "llama-index-core>=0.14.25,<0.15",
     "llama-index-readers-docling>=0.5,<0.6",
     "llama-index-node-parser-docling>=0.5,<0.6",
     "llama-index-vector-stores-qdrant>=0.10,<0.11",
-    "streamlit",
+]
+# docker/serve.Dockerfile: the chatbots, the API and the UI (src/rag_lab/serve, ui/).
+serve = [
     "langgraph",
     "langchain-ollama",
-    "sqlglot",  # parses a generated query to check it before it runs (src/rag_lab/sql/guard.py)
-    "pyyaml",  # the settings files in config/ (src/rag_lab/settings.py)
+    "sqlglot",  # parses a generated query to check it before it runs (src/rag_lab/serve/guard.py)
+    "pillow",  # writes the passage number on a picture given to the chat model
+    "fastapi",  # the HTTP API (src/rag_lab/serve/api.py)
+    "uvicorn",
+    "streamlit",
 ]
 
 [dependency-groups]

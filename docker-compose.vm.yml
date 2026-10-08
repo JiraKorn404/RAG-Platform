@@ -1,0 +1,8 @@
+# For the VM, where PostgreSQL and Qdrant already run in Docker: our services join their network, so
+# config/connections.yaml and .env can name them by their container names. PLATFORM_NETWORK in .env is
+# the name of that network (`docker network ls`).
+
+networks:
+  default:
+    name: ${PLATFORM_NETWORK}
+    external: true

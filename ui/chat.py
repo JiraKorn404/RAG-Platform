@@ -8,7 +8,6 @@ from trace_view import (
     apply,
     attempt_lines,
     example_of,
-    history_of,
     messages_from,
     new_trace,
     show_answer,
@@ -16,10 +15,7 @@ from trace_view import (
     sql_attempt_lines,
 )
 
-from rag_lab import clients
-from rag_lab.agent import run
-from rag_lab.agent.documents import DocumentsFlow, build_graph
-from rag_lab.agent.events import (
+from rag_lab.core.events import (
     AnswerToken,
     ExamplesFound,
     Graded,
@@ -34,34 +30,23 @@ from rag_lab.agent.events import (
     StepStarted,
     Thinking,
 )
-from rag_lab.agent.sql import SqlFlow
-from rag_lab.agent.sql import build_graph as build_sql_graph
-from rag_lab.config import ExperimentConfig
-from rag_lab.metrics.store import MetricsStore
-from rag_lab.settings import load
-from rag_lab.sql import examples as good_answers
 
 # A chat searches one kind of thing for its whole life, chosen before its first question.
 SOURCES = {"documents": "Vector database (documents)", "database": "Relational database (tables)"}
 ICONS = {"documents": ":material/description:", "database": ":material/database:"}
 
 
-@st.cache_resource
-def services() -> tuple:
-    """The embedder, Qdrant, the metrics store and the reranker, kept for as long as the UI runs."""
-    return clients.embedder(), clients.qdrant(), clients.metrics(), clients.reranker()
-
-
 @st.cache_data(ttl=15)
-def experiments() -> list[dict]:
-    """The experiments that have a Qdrant collection and a BM25 vector (hybrid search needs it)."""
-    _, qdrant, metrics, _ = services()
-    existing = {c.name for c in qdrant.client.get_collections().collections}
-    return [
-        {**row, "points": qdrant.count(row["name"])}
-        for row in metrics.list_experiments()
-        if row["name"] in existing and row["config"].get("index", {}).get("sparse")
-    ]
+def targets() -> dict:
+    """The experiments that have a Qdrant collection and a BM25 vector (hybrid search needs it), and the
+    schemas."""
+    return data.get("/targets")
+
+
+@st.cache_data(ttl=60)
+def check(kind: str, target: str) -> dict:
+    """What a chat runs with now (config/llm.yaml, checked against what Ollama has)."""
+    return data.get("/check", kind=kind, target=target)
 
 
 def describe(row: dict) -> str:
@@ -87,7 +72,7 @@ def open_chat(chat_id: str) -> None:
 
 
 def delete_chat(chat_id: str) -> None:
-    services()[2].delete_chat_session(chat_id)
+    data.delete(f"/chats/{chat_id}")
     new_chat()
 
 
@@ -110,12 +95,9 @@ def database_progress(trace: dict) -> str:
     return "\n\n".join(parts)
 
 
-def answer_turn(
-    question: str, graph, flow, metrics: MetricsStore, chat_id: str, history: list[tuple[str, str]],
-) -> dict:
-    """Run one question, drawing each step as it happens. Returns what is shown for the turn."""
-    kind = flow.kind
-    trace = new_trace(question, flow.cfg.model_dump(mode="json"), kind)
+def answer_turn(question: str, kind: str, target: str, settings: dict, chat_id: str) -> dict:
+    """Ask one question, drawing each step as it happens. Returns what is shown for the turn."""
+    trace = new_trace(question, settings, kind)
     live, box = st.empty(), st.empty()
     text, step = "", "starting"
     with live.container():
@@ -123,13 +105,13 @@ def answer_turn(
         with status:
             attempts_box, chunks_box, thinking_box = st.empty(), st.empty(), st.empty()
     try:
-        for event in run(graph, flow, question, history, metrics=metrics, session_id=chat_id):
+        for event in data.ask(chat_id, kind, target, question):
             apply(trace, event)
             if isinstance(event, StepStarted):
                 step = event.node
                 label = STEP_NAMES[step] + "…"
                 if step == "retrieve":
-                    label = f"{STEP_NAMES[step]} (hybrid, {flow.cfg.candidates} candidates, then reranking)…"
+                    label = f"{STEP_NAMES[step]} (hybrid, {settings['candidates']} candidates, then reranking)…"
                 status.update(label=label)
             elif isinstance(event, Thinking):
                 thinking_box.markdown(f"**Thinking**\n\n{trace['thinking']}")
@@ -148,7 +130,7 @@ def answer_turn(
                         for h in event.hits
                     )
                 )
-    except Exception as e:  # noqa: BLE001  (Ollama or Qdrant not reachable: show where it failed, do not crash)
+    except data.ApiError as e:  # Ollama or Qdrant not reachable: show where it failed, do not crash
         trace["error"] = f"{STEP_NAMES.get(step, 'Starting')} failed: {e}"
         status.update(label=trace["error"], state="error")
         return trace
@@ -160,27 +142,35 @@ def answer_turn(
 
 style.hero("Chatbot", "Ask questions of your documents or your tables, and see how each answer was found")
 
-embedder, qdrant, metrics, reranker = services()
-available = experiments()
+try:
+    found = targets()
+    past = data.get("/chats")
+except data.ApiError as e:
+    st.error(str(e))
+    st.stop()
+available = found["collections"]
 by_name = {row["name"]: row for row in available}
-schemas = metrics.list_db_schemas()
+schemas = found["schemas"]
 schema_by_name = {s["name"]: s for s in schemas}
 
 # Which chat is this? The id in the URL, or a new one. A chat searches the one thing it started with.
 chat_id = st.query_params.get("chat")
-session = metrics.get_chat_session(chat_id) if chat_id else None
+if chat_id and st.session_state.get("loaded_chat") != chat_id:
+    saved = data.find(f"/chats/{chat_id}")
+    st.session_state["messages"] = messages_from(saved["turns"] if saved else [])
+    st.session_state["opened"] = {"kind": saved["kind"], "target": saved["target"]} if saved else None
+    st.session_state["loaded_chat"] = chat_id
+# A chat exists from its first saved turn: it is the one opened, or it is among the chats by now.
+session = (st.session_state.get("opened") or next((s for s in past if s["session_id"] == chat_id), None)) if chat_id else None
 owner = None
 if session:
-    if session["kind"] == "documents":
-        found = next((r for r in available if r["config_hash"] == session["config_hash"]), None)
-        owner = found["name"] if found else None
-    else:
-        owner = session["schema_name"] if session["schema_name"] in schema_by_name else None
+    owner = session["target"] if session["target"] in (by_name if session["kind"] == "documents" else schema_by_name) else None
     if owner is None:
         st.warning("That chat searches something that is not available here, so a new chat was started.")
         chat_id, session = None, None
 if not chat_id:
     chat_id = new_chat()
+    st.session_state["messages"], st.session_state["opened"], st.session_state["loaded_chat"] = [], None, chat_id
 locked = session is not None  # a chat that has a turn keeps what it searches
 if locked:
     st.session_state["source"] = session["kind"]
@@ -191,20 +181,15 @@ for key, valid in (("experiment", by_name), ("schema", schema_by_name)):
     if st.session_state.get(key) not in valid:
         st.session_state.pop(key, None)
 
-if st.session_state.get("loaded_chat") != chat_id:
-    st.session_state["messages"] = messages_from(metrics.get_chat_turns(chat_id))
-    st.session_state["loaded_chat"] = chat_id
-
 # The sidebar: a new chat, what this chat searches, and the chats so far. The models and every other
 # setting are in config/llm.yaml.
-target = None  # the experiment (a row) or the schema (its name) this chat searches
+target = None  # the experiment or the schema this chat searches, by name
 with st.sidebar:
     st.button("New chat", on_click=new_chat, icon=":material/add:", width="stretch")
     kind = st.radio("Search in", list(SOURCES), key="source", format_func=SOURCES.get, disabled=locked, help="Chosen before the first question, and fixed for the whole chat.")
     if kind == "documents":
         if available:
-            name = st.selectbox("Collection", list(by_name), key="experiment", format_func=lambda n: describe(by_name[n]), disabled=locked)
-            target = by_name[name]
+            target = st.selectbox("Collection", list(by_name), key="experiment", format_func=lambda n: describe(by_name[n]), disabled=locked)
         else:
             st.info("No collection with a BM25 vector exists yet. Put a PDF in data/raw (with `index.sparse: true` in config/pipeline.yaml).")
     elif schemas:
@@ -213,7 +198,6 @@ with st.sidebar:
         st.info("No schema exists yet. Put a CSV file in data/tables/<schema>/.")
     if locked:
         st.caption("A chat keeps what it searches. Start a new chat to search somewhere else.")
-    past = metrics.list_chat_sessions()
     if past:
         st.subheader("Chat history")
         for s in past:
@@ -227,17 +211,15 @@ with st.sidebar:
                 args=(s["session_id"],),
                 type="primary" if s["session_id"] == chat_id else "secondary",
                 width="stretch",
-                help=f"{what}: {s['target']}. {s['turns']} turn(s), last used {s['updated_at']:%d %b %Y %H:%M} UTC",
+                help=f"{what}: {s['target']}. {s['turns']} turn(s), last used {data.when(s['updated_at']):%d %b %Y %H:%M} UTC",
             )
     if st.session_state["messages"]:
         with st.popover("Delete this chat", width="stretch"):
             st.write("This deletes the chat and all its turns.")
             st.button("Yes, delete it", on_click=delete_chat, args=(chat_id,), key="delete-chat")
 
-settings = load()  # config/llm.yaml as it is now
 
-
-def mark_good(trace: dict, schema: str, saved: dict, pair: tuple[str, str], key: str) -> None:
+def mark_good(trace: dict, saved: dict, pair: tuple[str, str], key: str) -> None:
     """The thumbs-up under a database answer: save the question and its SQL as an example, or, when it is
     already saved, take it away again."""
     existing = saved.get(pair)
@@ -251,17 +233,17 @@ def mark_good(trace: dict, schema: str, saved: dict, pair: tuple[str, str], key:
     ):
         try:
             if pressed:
-                good_answers.remove(metrics, qdrant, schema, existing["id"])
+                data.delete(f"/examples/{existing['id']}")
             else:
-                good_answers.save(metrics, embedder, qdrant, settings.database_chat, schema, trace["question"], pair[0], pair[1], trace["turn_id"])
-        except Exception as e:  # noqa: BLE001  (Ollama or Qdrant down: the table may be ahead of the index; `examples --reindex` fixes it)
+                data.post(f"/turns/{trace['turn_id']}/good")
+        except data.ApiError as e:  # Ollama or Qdrant down: the table may be ahead of the index; `tables examples --reindex` fixes it
             st.error(f"Could not change the example: {e}")
         else:
             st.rerun()
 
 
 saved_examples = (
-    {(e["standalone"], e["sql"]): e for e in metrics.list_sql_examples(owner)} if locked and kind == "database" else {}
+    {(e["standalone"], e["sql"]): e for e in data.get(f"/schemas/{owner}/examples")} if locked and kind == "database" else {}
 )
 for index, message in enumerate(st.session_state["messages"]):
     with st.chat_message(message["role"]):
@@ -273,8 +255,9 @@ for index, message in enumerate(st.session_state["messages"]):
             st.error(trace["error"])
         else:
             show_answer(trace)
-        if locked and kind == "database" and (pair := example_of(trace)):
-            mark_good(trace, owner, saved_examples, pair, f"good-{chat_id}-{index}")
+        # a turn that was not saved has no id, and a good answer is kept by its turn
+        if locked and kind == "database" and trace["turn_id"] and (pair := example_of(trace)):
+            mark_good(trace, saved_examples, pair, f"good-{chat_id}-{index}")
         show_trace(trace)
         if trace["done"] and not trace["done"].saved:
             st.warning(f"This turn was not saved to the database: {trace['done'].save_error}")
@@ -285,31 +268,24 @@ if target is None:
 
 # What this chat runs with: llm.yaml, checked against what Ollama has. A missing model stops here with
 # the key to change, instead of failing in the middle of an answer.
-cfg = settings.documents_chat if kind == "documents" else settings.database_chat
-embedding = target["config"]["embed"]["model"] if kind == "documents" else None
-missing, switched_off, notes = data.check_models(cfg, embedding)
-for problem in missing:
-    st.error(problem)
-if missing:
+try:
+    ready = check(kind, target)
+except data.ApiError as e:
+    st.error(str(e))
     st.stop()
-for note in notes:
+for problem in ready["missing"]:
+    st.error(problem)
+if ready["missing"]:
+    st.stop()
+for note in ready["notes"]:
     st.caption(note)
-cfg = cfg.model_copy(update=switched_off)
 
 question = st.chat_input("Ask a question about the documents" if kind == "documents" else "Ask a question about the tables")
 if question and question.strip():
     with st.chat_message("user"):
         st.markdown(question)
-    base_url = clients.ollama_url()
-    if kind == "documents":
-        experiment = ExperimentConfig.model_validate(target["config"])
-        graph = build_graph(experiment, embedder, qdrant, reranker, base_url, cfg)
-        flow = DocumentsFlow(experiment, cfg)
-    else:
-        graph = build_sql_graph(metrics, target, base_url, cfg, embedder, qdrant)
-        flow = SqlFlow(target, cfg)
     with st.chat_message("assistant"):
-        trace = answer_turn(question, graph, flow, metrics, chat_id, history_of(st.session_state["messages"]))
+        trace = answer_turn(question, kind, target, ready["settings"], chat_id)
     st.session_state["messages"] += [
         {"role": "user", "content": question},
         {"role": "assistant", "trace": trace},

@@ -1,55 +1,96 @@
-"""Small helpers shared by the pages: the label of an embedding model, and whether Ollama has the
-models config/llm.yaml names."""
+"""How the pages reach the system: the HTTP API (src/rag_lab/serve/api.py), the same way the platform's
+backend does. The pages import nothing of the system but its events and its settings, so whatever they
+show is known to be reachable over HTTP."""
+
+import json
+from collections.abc import Iterator
+from datetime import datetime
 
 import httpx
 import streamlit as st
 
-from rag_lab import clients
-from rag_lab.config import ChatModelConfig, embed_model_label
+from rag_lab.core.config import embed_model_label
+from rag_lab.core.events import Event, Failed, from_dict
+from rag_lab.core.settings import load
 
 model_label = embed_model_label  # 'qwen3-embedding:4b' -> '4b'; another family keeps its whole name
 
 
-@st.cache_data(ttl=60)
-def ollama_models() -> dict[str, list[str]] | None:
-    """The models Ollama has, each with its capabilities, or None when Ollama cannot be reached."""
+class ApiError(Exception):
+    """The API refused a request, or cannot be reached. The message is for the person at the page."""
+
+
+@st.cache_resource
+def _client() -> httpx.Client:
+    """Kept for as long as the UI runs: `docker compose restart ui` after editing config/connections.yaml."""
+    api = load().connections.api
+    return httpx.Client(base_url=api.url, headers={"X-API-Key": api.key} if api.key else {}, timeout=120)
+
+
+def _refusal(reply: httpx.Response) -> str:
     try:
-        reply = httpx.get(f"{clients.ollama_url().rstrip('/')}/api/tags", timeout=5)
-        return {m["name"]: m.get("capabilities", []) for m in reply.json()["models"]}
-    except Exception:  # noqa: BLE001  (not reachable, or not Ollama: the caller says so)
+        return str(reply.json()["detail"])
+    except (ValueError, KeyError, TypeError):
+        return f"The API answered {reply.status_code}."
+
+
+def _call(method: str, path: str, **kwargs):
+    try:
+        reply = _client().request(method, path, **kwargs)
+    except httpx.HTTPError as e:
+        raise ApiError(f"The API cannot be reached at {_client().base_url} (`api.url` in config/connections.yaml): {e}") from e
+    if reply.status_code >= 400:
+        raise ApiError(_refusal(reply))
+    return reply.json() if reply.content else None
+
+
+def get(path: str, **params):
+    return _call("GET", path, params=params)
+
+
+def find(path: str) -> dict | None:
+    """`get`, with None for what the API does not have (404)."""
+    reply = _client().get(path)
+    return reply.json() if reply.status_code == 200 else None
+
+
+def post(path: str):
+    return _call("POST", path)
+
+
+def delete(path: str):
+    return _call("DELETE", path)
+
+
+def ask(chat_id: str, kind: str, target: str, question: str) -> Iterator[Event]:
+    """Ask a question and yield the events of the turn as they arrive, `Done` last. A turn the API
+    refuses, or that fails on the way, raises `ApiError` with the reason."""
+    body = {"kind": kind, "target": target, "question": question}
+    try:
+        with _client().stream("POST", f"/chats/{chat_id}/turns", json=body, timeout=None) as reply:
+            if reply.status_code >= 400:
+                reply.read()
+                raise ApiError(_refusal(reply))
+            for line in reply.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                event = from_dict(json.loads(line.removeprefix("data: ")))
+                if isinstance(event, Failed):
+                    raise ApiError(event.message)
+                yield event
+    except httpx.HTTPError as e:
+        raise ApiError(f"The connection to the API was lost: {e}") from e
+
+
+def picture(image: str) -> bytes | None:
+    """The PNG of a picture chunk (`Hit.image`), or None when it is gone."""
+    try:
+        reply = _client().get(f"/pictures/{image}")
+    except httpx.HTTPError:
         return None
+    return reply.content if reply.status_code == 200 else None
 
 
-def check_models(cfg: ChatModelConfig, embedding: str | None = None) -> tuple[list[str], dict, list[str]]:
-    """Whether Ollama can run a chat with these settings (`documents_chat` or `database_chat` of
-    llm.yaml; `embedding` is the model the collection was made with). Returns what stops it, each with
-    the key to change; the settings to switch off because the chat model cannot do them; and a note
-    for each of those."""
-    models = ollama_models()
-    if models is None:
-        return [f"Ollama cannot be reached at {clients.ollama_url()} (`ollama.url` in config/connections.yaml)."], {}, []
-
-    def installed(name: str) -> bool:
-        return name in models or f"{name}:latest" in models
-
-    wanted = [(cfg.model, "the chat model (`chat.model` in config/llm.yaml)")]
-    if hasattr(cfg, "reranker"):
-        wanted.append((cfg.reranker.model, "the reranker (`reranker.model` in config/llm.yaml)"))
-    if embedding:
-        wanted.append((embedding, "the embedding model this collection was made with"))
-    missing = [
-        f"Ollama has no model `{name}`, which is {what}. Pull it with `ollama pull {name}`, or name one it has."
-        for name, what in wanted
-        if not installed(name)
-    ]
-
-    can = models.get(cfg.model) or models.get(f"{cfg.model}:latest") or []
-    off, notes = {}, []
-    if installed(cfg.model):
-        if cfg.think and "thinking" not in can:
-            off["think"] = False
-            notes.append(f"`{cfg.model}` cannot think, so this chat runs without thinking (`chat.think` in config/llm.yaml).")
-        if getattr(cfg, "show_pictures", False) and "vision" not in can:
-            off["show_pictures"] = False
-            notes.append(f"`{cfg.model}` cannot see images, so pictures are given to it as their captions (`documents_chat.show_pictures`).")
-    return missing, off, notes
+def when(value: str | None) -> datetime | None:
+    """A time as the API sends it (ISO text), as a datetime."""
+    return datetime.fromisoformat(value) if value else None

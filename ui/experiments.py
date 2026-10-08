@@ -1,18 +1,10 @@
 """What is in each experiment, with delete buttons for a document and for a whole experiment.
 
-The work is in rag_lab.library; this page lists, asks for confirmation inline, and redraws."""
+The work is behind the API (serve/library.py); this page lists, asks for confirmation inline, and redraws."""
 
 import data
 import streamlit as st
 import style
-
-from rag_lab import clients
-from rag_lab.library import delete_document, delete_experiment, list_library
-
-
-@st.cache_resource
-def stores() -> tuple:
-    return clients.metrics(), clients.qdrant()
 
 
 def _title(entry: dict) -> str:
@@ -40,7 +32,6 @@ def _clear_ask() -> None:
 
 def _confirm(entry: dict, pending: dict) -> None:
     """The inline 'are you sure' for this entry, and the delete itself."""
-    metrics, qdrant = stores()
     name = entry["name"]
     if pending["kind"] == "doc":
         doc = next(d for d in entry["documents"] if d["doc_id"] == pending["doc_id"])
@@ -64,18 +55,18 @@ def _confirm(entry: dict, pending: dict) -> None:
     if yes.button("Delete", type="primary", key=f"yes-{name}"):
         try:
             if pending["kind"] == "doc":
-                done = delete_document(name, pending["doc_id"], metrics, qdrant)
+                done = data.delete(f"/collections/{name}/documents/{pending['doc_id']}")
                 message = (
                     f"Removed “{label}” from “{name}”: {done['points']} points, {done['files']} files, "
                     f"{done['rows']} metric rows."
                 )
             else:
-                done = delete_experiment(name, metrics, qdrant)
+                done = data.delete(f"/collections/{name}")
                 message = (
                     f"Deleted “{name}”: collection {'yes' if done['collection'] else 'was missing'}, "
                     f"folder {'yes' if done['folder'] else 'was missing'}, record {'yes' if done['row'] else 'was missing'}."
                 )
-        except Exception as e:  # noqa: BLE001  (Qdrant or Postgres not reachable: show it, change nothing else)
+        except data.ApiError as e:  # Qdrant or Postgres not reachable: show it, change nothing else
             st.error(f"The delete failed: {e}. Nothing after the failed step was changed; press Delete again to retry.")
             return
         _clear_ask()
@@ -89,7 +80,7 @@ def _render(entry: dict, pending: dict | None) -> None:
     mine = pending is not None and pending["name"] == name
     with st.expander(_title(entry), expanded=mine):
         if entry["created_at"]:
-            st.caption(f"Created {entry['created_at']:%Y-%m-%d %H:%M}")
+            st.caption(f"Created {data.when(entry['created_at']):%Y-%m-%d %H:%M}")
         if not entry["has_collection"]:
             st.caption("This experiment has no Qdrant collection, so it cannot be searched.")
         for doc in entry["documents"]:
@@ -117,12 +108,15 @@ st.caption(
     "ingested by Dagster into the experiment named in `config/pipeline.yaml`."
 )
 
-metrics, qdrant = stores()
 message = st.session_state.pop("experiments_message", None)
 if message:
     st.success(message)
 
-entries = list_library(metrics, qdrant)
+try:
+    entries = data.get("/library")
+except data.ApiError as e:
+    st.error(str(e))
+    st.stop()
 if not entries:
     st.info("No experiments yet.")
     st.stop()

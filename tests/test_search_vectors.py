@@ -1,7 +1,7 @@
 import math
 
-from rag_lab.embedding.sparse import document_vectors, query_vector
-from rag_lab.reranking import yes_probability
+from rag_lab.core.embed import document_vectors, query_vector
+from rag_lab.serve.search import yes_probability
 
 
 def _weight(vector, term: str) -> float:

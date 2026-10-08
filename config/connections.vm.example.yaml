@@ -1,0 +1,25 @@
+# connections.yaml for a server that already has PostgreSQL and Qdrant in Docker, and whose tables are
+# already in PostgreSQL. Copy it over connections.yaml there and put the names right. See the README,
+# "Moving to a server", for the steps around it.
+#
+# The hosts are container names: docker-compose.vm.yml puts our containers on the platform's network.
+
+ollama:
+  url: ${OLLAMA_BASE_URL}
+
+qdrant:
+  url: http://qdrant:6333          # the Qdrant container's name on the platform's network
+
+# Our tables, in a schema of our own inside the platform's database.
+app_database:
+  url: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/platform
+  schema: rag
+
+# The platform's tables. There is no loader: nothing of ours can write to them, and the CSV import is off.
+tables_database:
+  reader_url: postgresql://rag_reader:${SQL_READER_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/platform
+  existing_schemas: [public]
+
+api:
+  url: http://api:8000
+  key: ${RAG_API_KEY}

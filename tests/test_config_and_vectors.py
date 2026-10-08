@@ -2,15 +2,15 @@ import math
 
 import pytest
 
-from rag_lab.config import (
+from rag_lab.core.config import (
     ChunkConfig,
     EmbedConfig,
     ExperimentConfig,
     ParseConfig,
     SemanticSettings,
 )
-from rag_lab.embedding.vectors import truncate_and_normalise
-from rag_lab.settings import ConfigError, load
+from rag_lab.core.embed import truncate_and_normalise
+from rag_lab.core.settings import ConfigError, load
 
 
 def test_config_hash_changes_with_the_name():
