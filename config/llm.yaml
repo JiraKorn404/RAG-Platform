@@ -1,0 +1,55 @@
+# Every model, and how it is called. The names are Ollama's (`ollama list`).
+#
+# A key left out keeps its default (src/rag_lab/config.py); an unknown key is an error. After an edit,
+# Dagster uses the file at its next run, and the Chatbot at the next question.
+
+# Turns chunks and questions into vectors. It is part of a collection: changing it needs a new `name`
+# in pipeline.yaml. Known families: qwen3-embedding (0.6b, 4b, 8b) and embeddinggemma-2 (740m, the one
+# that can also embed pictures).
+embedding:
+  model: embeddinggemma-2:740m
+  dimension: null       # null keeps the model's own size; a smaller number cuts the vectors to it
+
+# Reads scanned pages when pipeline.yaml has `parse.ocr: true`.
+ocr:
+  model: glm-ocr:bf16
+
+# Scores the chunks a search found against the question. The 4B builds work; the 0.6B builds give
+# every chunk a score of 0.
+reranker:
+  model: dengcao/Qwen3-Reranker-4B:Q8_0
+
+# What both chats share. A chat's own section below may set any of these again for itself.
+chat:
+  model: gemma4:e4b-mlx
+  think: true           # the model thinks before it answers (or before it writes the SQL)
+  keep_alive: 30m
+  history_turns: 6      # earlier questions and answers a follow-up is read with
+
+# The chat over the vector database.
+documents_chat:
+  temperature: 0.2
+  num_ctx: 8192         # the context window; a prompt longer than this is cut by Ollama
+  top_k: 5              # chunks given to the model
+  candidates: 20        # hits the reranker scores, one call to Ollama each
+  enough_score: 0.5     # best reranker score at or above this: the chunks answer the question
+  missing_score: 0.1    # below this: they do not; in between the model is asked
+  max_rewrites: 1       # other queries tried before saying "not found"
+  show_pictures: true   # a retrieved picture is given to the model as an image
+  max_pictures: 2
+
+# The chat over the relational database (text-to-SQL).
+database_chat:
+  temperature: 0
+  num_ctx: 16384
+  schema_char_budget: 12000   # a schema described in more characters than this is refused, not cut
+  max_repairs: 2              # times a refused or failing query is rewritten
+  row_limit: 200              # rows a query may return
+  answer_rows: 30             # rows the answer is written from
+  statement_timeout_s: 10
+  use_examples: true          # show the model good answers to similar questions
+  examples_k: 3
+  # How similar a saved question must be to be shown. The scale depends on the embedding model: with
+  # embeddinggemma-2 the same kind of question scored 0.89 to 0.94 and other questions 0.55 to 0.72
+  # (one example, nine questions); with qwen3-embedding:0.6b the gap was around 0.55.
+  examples_min_score: 0.8

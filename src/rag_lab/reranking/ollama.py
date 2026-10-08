@@ -58,14 +58,14 @@ class OllamaReranker:
 
     def _score_one(self, query: str, text: str, cfg: SearchConfig) -> float:
         body = {
-            "model": cfg.reranker,
-            "prompt": prompt(query, text, cfg.rerank_instruction),
+            "model": cfg.reranker.model,
+            "prompt": prompt(query, text, cfg.reranker.instruction),
             "raw": True,
             "stream": False,
             "logprobs": True,
             "top_logprobs": 20,
-            "keep_alive": cfg.keep_alive,
-            "options": {"num_predict": 1, "temperature": 0, "num_ctx": cfg.rerank_num_ctx},
+            "keep_alive": cfg.reranker.keep_alive,
+            "options": {"num_predict": 1, "temperature": 0, "num_ctx": cfg.reranker.num_ctx},
         }
         for attempt in range(self.retries):
             try:
@@ -75,7 +75,7 @@ class OllamaReranker:
                     logprobs = resp.json().get("logprobs")
                     if not logprobs:
                         raise RuntimeError(
-                            f"Ollama returned no log-probabilities for '{cfg.reranker}'. "
+                            f"Ollama returned no log-probabilities for '{cfg.reranker.model}'. "
                             "Reranking needs an Ollama with `logprobs` support."
                         )
                     return yes_probability(logprobs[0]["top_logprobs"])

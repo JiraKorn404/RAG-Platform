@@ -2,9 +2,8 @@ import os
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
-RAW_DIR = DATA_DIR / "raw"
-# The experiment a PDF put into data/raw is ingested with (read by the sensor at every tick).
-INGEST_CONFIG = Path(os.environ.get("INGEST_CONFIG", "config/ingest.yaml"))
+RAW_DIR = DATA_DIR / "raw"  # PDFs to ingest
+TABLES_DIR = DATA_DIR / "tables"  # CSV files to import: <schema>/<table>.csv
 
 
 def artifacts_dir(experiment: str, stage: str) -> Path:

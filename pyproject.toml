@@ -1,7 +1,7 @@
 [project]
 name = "rag-lab"
 version = "0.1.0"
-description = "Lab for PDF ingestion into Qdrant, orchestrated by Dagster"
+description = "A chatbot over PDF documents (Qdrant) and CSV tables (PostgreSQL), ingested by Dagster"
 requires-python = ">=3.12"
 dependencies = [
     "dagster",
@@ -21,7 +21,7 @@ dependencies = [
     "langgraph",
     "langchain-ollama",
     "sqlglot",  # parses a generated query to check it before it runs (src/rag_lab/sql/guard.py)
-    "pyyaml",  # config/ingest.yaml, the experiment the sensor ingests new PDFs with
+    "pyyaml",  # the settings files in config/ (src/rag_lab/settings.py)
 ]
 
 [dependency-groups]

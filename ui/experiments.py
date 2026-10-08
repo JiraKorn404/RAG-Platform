@@ -2,20 +2,17 @@
 
 The work is in rag_lab.library; this page lists, asks for confirmation inline, and redraws."""
 
-import os
-
 import data
 import streamlit as st
 import style
 
+from rag_lab import clients
 from rag_lab.library import delete_document, delete_experiment, list_library
-from rag_lab.metrics.store import MetricsStore
-from rag_lab.storage.qdrant import QdrantStore
 
 
 @st.cache_resource
-def stores() -> tuple[MetricsStore, QdrantStore]:
-    return MetricsStore(os.environ["METRICS_DATABASE_URL"]), QdrantStore(os.environ["QDRANT_URL"])
+def stores() -> tuple:
+    return clients.metrics(), clients.qdrant()
 
 
 def _title(entry: dict) -> str:
@@ -50,7 +47,8 @@ def _confirm(entry: dict, pending: dict) -> None:
         label = doc["source_file"] or doc["doc_id"]
         st.warning(
             f"Remove “{label}” from “{name}”? This deletes its {doc['points']} points and its files in this "
-            "experiment. The PDF in data/raw stays. This cannot be undone."
+            "experiment. The PDF in data/raw stays, and Dagster still counts it as ingested: to put it back, "
+            "run its partition of `ingest_job` in Dagster. This cannot be undone."
         )
     elif entry["has_row"]:
         st.warning(
@@ -113,7 +111,11 @@ def _render(entry: dict, pending: dict | None) -> None:
             _confirm(entry, pending)
 
 
-style.hero("Experiments", "What is in each experiment, and delete what you no longer need")
+style.hero("Experiments", "The collections of the vector database: what is in each, and delete what you no longer need")
+st.caption(
+    "An experiment is a Qdrant collection with the settings it was made with. A PDF put into `data/raw/` is "
+    "ingested by Dagster into the experiment named in `config/pipeline.yaml`."
+)
 
 metrics, qdrant = stores()
 message = st.session_state.pop("experiments_message", None)
@@ -122,7 +124,7 @@ if message:
 
 entries = list_library(metrics, qdrant)
 if not entries:
-    st.info("No experiments yet. Put a PDF in data/raw and Dagster ingests it.")
+    st.info("No experiments yet.")
     st.stop()
 
 with_row = [e for e in entries if e["has_row"]]

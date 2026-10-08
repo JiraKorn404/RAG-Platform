@@ -1,4 +1,3 @@
-import os
 import uuid
 
 import data
@@ -17,6 +16,7 @@ from trace_view import (
     sql_attempt_lines,
 )
 
+from rag_lab import clients
 from rag_lab.agent import run
 from rag_lab.agent.documents import DocumentsFlow, build_graph
 from rag_lab.agent.events import (
@@ -36,27 +36,20 @@ from rag_lab.agent.events import (
 )
 from rag_lab.agent.sql import SqlFlow
 from rag_lab.agent.sql import build_graph as build_sql_graph
-from rag_lab.config import AgentConfig, ExperimentConfig, SearchConfig, SqlAgentConfig
-from rag_lab.embedding.ollama import OllamaEmbedder
+from rag_lab.config import ExperimentConfig
 from rag_lab.metrics.store import MetricsStore
-from rag_lab.reranking import OllamaReranker
+from rag_lab.settings import load
 from rag_lab.sql import examples as good_answers
-from rag_lab.storage.qdrant import QdrantStore
 
 # A chat searches one kind of thing for its whole life, chosen before its first question.
-SOURCES = {"documents": "Documents (vector database)", "database": "Database (tables)"}
+SOURCES = {"documents": "Vector database (documents)", "database": "Relational database (tables)"}
 ICONS = {"documents": ":material/description:", "database": ":material/database:"}
 
 
 @st.cache_resource
-def services() -> tuple[OllamaEmbedder, QdrantStore, MetricsStore, OllamaReranker]:
-    base_url = os.environ["OLLAMA_BASE_URL"]
-    return (
-        OllamaEmbedder(base_url),
-        QdrantStore(os.environ["QDRANT_URL"]),
-        MetricsStore(os.environ["METRICS_DATABASE_URL"]),
-        OllamaReranker(base_url),
-    )
+def services() -> tuple:
+    """The embedder, Qdrant, the metrics store and the reranker, kept for as long as the UI runs."""
+    return clients.embedder(), clients.qdrant(), clients.metrics(), clients.reranker()
 
 
 @st.cache_data(ttl=15)
@@ -136,7 +129,7 @@ def answer_turn(
                 step = event.node
                 label = STEP_NAMES[step] + "…"
                 if step == "retrieve":
-                    label = f"{STEP_NAMES[step]} (hybrid, {flow.cfg.search.candidates} candidates, then reranking)…"
+                    label = f"{STEP_NAMES[step]} (hybrid, {flow.cfg.candidates} candidates, then reranking)…"
                 status.update(label=label)
             elif isinstance(event, Thinking):
                 thinking_box.markdown(f"**Thinking**\n\n{trace['thinking']}")
@@ -166,12 +159,6 @@ def answer_turn(
 
 
 style.hero("Chatbot", "Ask questions of your documents or your tables, and see how each answer was found")
-
-rerankers = data.reranker_models()
-chat_models = data.chat_models()
-if not chat_models:
-    st.info("Ollama has no chat model that can use tools installed, so the chatbot cannot run.")
-    st.stop()
 
 embedder, qdrant, metrics, reranker = services()
 available = experiments()
@@ -208,50 +195,30 @@ if st.session_state.get("loaded_chat") != chat_id:
     st.session_state["messages"] = messages_from(metrics.get_chat_turns(chat_id))
     st.session_state["loaded_chat"] = chat_id
 
-defaults = AgentConfig()
-models = list(chat_models)
+# The sidebar: a new chat, what this chat searches, and the chats so far. The models and every other
+# setting are in config/llm.yaml.
 target = None  # the experiment (a row) or the schema (its name) this chat searches
 with st.sidebar:
-    st.subheader("Chat settings")
+    st.button("New chat", on_click=new_chat, icon=":material/add:", width="stretch")
     kind = st.radio("Search in", list(SOURCES), key="source", format_func=SOURCES.get, disabled=locked, help="Chosen before the first question, and fixed for the whole chat.")
-    if locked:
-        what = "the documents of" if kind == "documents" else "the tables of the schema"
-        st.caption(f"This chat searches {what} `{owner}`. Start a new chat to search somewhere else.")
     if kind == "documents":
         if available:
-            name = st.selectbox("Experiment", list(by_name), key="experiment", format_func=lambda n: describe(by_name[n]), disabled=locked)
+            name = st.selectbox("Collection", list(by_name), key="experiment", format_func=lambda n: describe(by_name[n]), disabled=locked)
             target = by_name[name]
         else:
-            st.info("No experiment with a BM25 vector exists yet. Set `index.sparse: true` in config/ingest.yaml and put a PDF in data/raw.")
-        if not rerankers:
-            st.info("Ollama has no reranker installed, so documents cannot be searched.")
-            target = None
+            st.info("No collection with a BM25 vector exists yet. Put a PDF in data/raw (with `index.sparse: true` in config/pipeline.yaml).")
     elif schemas:
         target = st.selectbox("Schema", list(schema_by_name), key="schema", format_func=lambda n: f"{n} · {schema_by_name[n]['tables']} table(s)", disabled=locked)
     else:
-        st.info("No schema exists yet.")
-    model = st.selectbox("Chat model", models, index=models.index(defaults.model) if defaults.model in models else 0)
-    can_think, can_see = "thinking" in chat_models[model], "vision" in chat_models[model]
-    think = st.toggle("Thinking", value=defaults.think and can_think, disabled=not can_think, help="The model thinks before it answers (or, for a database, before it writes the SQL), and the page shows it. Slower.")
-    if kind == "documents":
-        rerank_model = st.selectbox("Reranker", rerankers or ["none installed"], index=rerankers.index(defaults.search.reranker) if defaults.search.reranker in rerankers else 0)
-        top_k = st.slider("Chunks given to the model (top k)", 1, 10, defaults.top_k)
-        candidates = int(st.number_input("Candidates", min_value=1, max_value=100, value=defaults.search.candidates, help="Hits the reranker scores; one call to Ollama each."))
-        show_pictures = st.toggle("Show pictures to the model", value=defaults.show_pictures and can_see, disabled=not can_see, help=f"When a retrieved chunk is a picture, the model is given the image and not only its caption (the first {defaults.max_pictures} of a turn). Only an experiment made with *Index the pictures* has picture chunks.")
-        st.caption("Search: hybrid (dense and BM25 keywords) with reranking.")
-    else:
-        st.caption("The model is given the whole schema, writes one SELECT, and a check and the database confirm it before it runs, read-only.")
-    st.button("New chat", on_click=new_chat, width="stretch")
-    if st.session_state["messages"]:
-        with st.popover("Delete this chat", width="stretch"):
-            st.write("This deletes the chat and all its turns.")
-            st.button("Yes, delete it", on_click=delete_chat, args=(chat_id,), key="delete-chat")
+        st.info("No schema exists yet. Put a CSV file in data/tables/<schema>/.")
+    if locked:
+        st.caption("A chat keeps what it searches. Start a new chat to search somewhere else.")
     past = metrics.list_chat_sessions()
     if past:
-        st.subheader("Past chats")
+        st.subheader("Chat history")
         for s in past:
             title = s["title"] if len(s["title"]) <= 34 else s["title"][:34] + "…"
-            what = "Documents" if s["kind"] == "documents" else "Database"
+            what = "Vector database" if s["kind"] == "documents" else "Relational database"
             st.button(
                 f"{title} · {s['turns']}",
                 key=f"chat-{s['session_id']}",
@@ -262,6 +229,13 @@ with st.sidebar:
                 width="stretch",
                 help=f"{what}: {s['target']}. {s['turns']} turn(s), last used {s['updated_at']:%d %b %Y %H:%M} UTC",
             )
+    if st.session_state["messages"]:
+        with st.popover("Delete this chat", width="stretch"):
+            st.write("This deletes the chat and all its turns.")
+            st.button("Yes, delete it", on_click=delete_chat, args=(chat_id,), key="delete-chat")
+
+settings = load()  # config/llm.yaml as it is now
+
 
 def mark_good(trace: dict, schema: str, saved: dict, pair: tuple[str, str], key: str) -> None:
     """The thumbs-up under a database answer: save the question and its SQL as an example, or, when it is
@@ -279,7 +253,7 @@ def mark_good(trace: dict, schema: str, saved: dict, pair: tuple[str, str], key:
             if pressed:
                 good_answers.remove(metrics, qdrant, schema, existing["id"])
             else:
-                good_answers.save(metrics, embedder, qdrant, SqlAgentConfig(), schema, trace["question"], pair[0], pair[1], trace["turn_id"])
+                good_answers.save(metrics, embedder, qdrant, settings.database_chat, schema, trace["question"], pair[0], pair[1], trace["turn_id"])
         except Exception as e:  # noqa: BLE001  (Ollama or Qdrant down: the table may be ahead of the index; `examples --reindex` fixes it)
             st.error(f"Could not change the example: {e}")
         else:
@@ -309,24 +283,29 @@ if target is None:
     st.info("Choose what to search in the sidebar." if not locked else "What this chat searches is not available.")
     st.stop()
 
+# What this chat runs with: llm.yaml, checked against what Ollama has. A missing model stops here with
+# the key to change, instead of failing in the middle of an answer.
+cfg = settings.documents_chat if kind == "documents" else settings.database_chat
+embedding = target["config"]["embed"]["model"] if kind == "documents" else None
+missing, switched_off, notes = data.check_models(cfg, embedding)
+for problem in missing:
+    st.error(problem)
+if missing:
+    st.stop()
+for note in notes:
+    st.caption(note)
+cfg = cfg.model_copy(update=switched_off)
+
 question = st.chat_input("Ask a question about the documents" if kind == "documents" else "Ask a question about the tables")
 if question and question.strip():
     with st.chat_message("user"):
         st.markdown(question)
-    base_url = os.environ["OLLAMA_BASE_URL"]
+    base_url = clients.ollama_url()
     if kind == "documents":
         experiment = ExperimentConfig.model_validate(target["config"])
-        cfg = AgentConfig(
-            model=model,
-            think=think,
-            top_k=top_k,
-            search=SearchConfig(method="hybrid+rerank", reranker=rerank_model, candidates=candidates),
-            show_pictures=show_pictures and can_see,
-        )
         graph = build_graph(experiment, embedder, qdrant, reranker, base_url, cfg)
         flow = DocumentsFlow(experiment, cfg)
     else:
-        cfg = SqlAgentConfig(model=model, think=think)
         graph = build_sql_graph(metrics, target, base_url, cfg, embedder, qdrant)
         flow = SqlFlow(target, cfg)
     with st.chat_message("assistant"):

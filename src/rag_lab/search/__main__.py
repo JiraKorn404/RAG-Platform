@@ -1,26 +1,16 @@
 """CLI: python -m rag_lab.search "query" --experiment <name> [--top-k 5] [--modality table] [--json] [--no-log]
 
-Needs OLLAMA_BASE_URL, QDRANT_URL and METRICS_DATABASE_URL in the environment (already set inside
-the dagster-code container). The experiment's settings are read from the `experiments` table.
+A dense search. The connections are read from config/connections.yaml, and the experiment's settings
+from the `experiments` table.
 """
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import asdict
 
-from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.store import MetricsStore
+from rag_lab import clients
 from rag_lab.search import load_experiment, search
-from rag_lab.storage.qdrant import QdrantStore
-
-
-def _env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        sys.exit(f"{name} is not set")
-    return value
 
 
 def main() -> None:
@@ -33,14 +23,14 @@ def main() -> None:
     parser.add_argument("--no-log", action="store_true", help="do not write to search_log")
     args = parser.parse_args()
 
-    metrics = MetricsStore(_env("METRICS_DATABASE_URL"))
+    metrics = clients.metrics()
     try:
         config_hash, config = load_experiment(metrics, args.experiment)
         result = search(
             args.query,
             config,
-            OllamaEmbedder(_env("OLLAMA_BASE_URL")),
-            QdrantStore(_env("QDRANT_URL")),
+            clients.embedder(),
+            clients.qdrant(),
             top_k=args.top_k,
             filters={"modality": args.modality} if args.modality else None,
         )

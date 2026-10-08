@@ -1,6 +1,6 @@
 # Refactor plan
 
-Written 2026-10-08. Nothing here is built yet. Each phase leaves the stack working, so the work can stop after any of them.
+Written 2026-10-08. **Phases 1 to 6 are done** (each has a status note with what was checked and what was built differently); Phase 7 is optional and not started. The current system is described in `CLAUDE.md` and `README.md`.
 
 ## Goal
 
@@ -104,7 +104,6 @@ ocr:
   model: glm-ocr:bf16
 reranker:
   model: dengcao/Qwen3-Reranker-4B:Q8_0
-  candidates: 20          # hits the reranker scores
 chat:                     # shared by both kinds of chat
   model: gemma4:e4b-mlx
   think: true
@@ -112,6 +111,7 @@ chat:                     # shared by both kinds of chat
   history_turns: 6
 documents_chat:           # the vector database
   top_k: 5
+  candidates: 20          # hits the reranker scores
   enough_score: 0.5
   missing_score: 0.1
   max_rewrites: 1
@@ -128,7 +128,7 @@ database_chat:            # the relational database
 
 ```yaml
 ollama:
-  url: http://host.docker.internal:11434
+  url: ${OLLAMA_BASE_URL}   # a private address, so it stays in .env
 qdrant:
   url: http://qdrant:6333
 app_database:             # chats, metrics, the registry of tables
@@ -188,42 +188,107 @@ Built differently from the plan:
 
 ### Phase 3: configuration in three YAML files
 
-- [ ] 1. `config.py`: plain pydantic models instead of `dagster.Config`, one top-level model per file (`Pipeline`, `Llm`, `Connections`) whose fields are the file's keys. `ExperimentConfig` is built from `pipeline.yaml` plus `llm.embedding` and `llm.ocr`, so the stage code does not change.
-- [ ] 2. `settings.py`: `load()` reads the three files from `RAG_CONFIG_DIR` (default `config/`), replaces `${NAME}`, and reports a bad key with its file. The embedding model's tokenizer and prompt templates are filled from its family, as `load_experiment_file` does today.
-- [ ] 3. `clients.py`: `embedder()`, `reranker()`, `qdrant()`, `metrics()` and the two table-database URLs, from `connections.yaml`. Every `os.environ[...]` read of an address goes (about 25 places in `ui/`, the CLIs, `sql/database.py`, `sql/bootstrap.py`) along with the `services()` copies in the pages.
-- [ ] 4. Dagster: delete `resources/`. Each asset gets its clients from `clients.py` and its settings from `settings.load()` when the run starts, and refuses to run when the name already exists with other settings. The sensor keeps its check, so a bad file fails the tick with the reason and no PDF is registered. Runs no longer carry run config: re-running a document is one click, with no launchpad form to fill.
-- [ ] 5. Write the three files from today's defaults. Delete `config/ingest.yaml`.
-- [ ] 6. Compose: mount `./config` read-only into the UI and the Dagster services. The environment block shrinks to the passwords, `DATA_DIR` and `RAG_CONFIG_DIR`. `.env.example` lists only passwords.
-- [ ] 7. Tests: three for the loader (`${NAME}` is replaced and a missing one is an error, an unknown key names its file, an embedding model brings its family's templates). Run the suite once.
+- [x] 1. `config.py`: plain pydantic models instead of `dagster.Config`, one top-level model per file (`Pipeline`, `Llm`, `Connections`) whose fields are the file's keys. `ExperimentConfig` is built from `pipeline.yaml` plus `llm.embedding` and `llm.ocr`, so the stage code does not change.
+- [x] 2. `settings.py`: `load()` reads the three files from `RAG_CONFIG_DIR` (default `config/`), replaces `${NAME}`, and reports a bad key with its file. The embedding model's tokenizer and prompt templates are filled from its family, as `load_experiment_file` does today.
+- [x] 3. `clients.py`: `embedder()`, `reranker()`, `qdrant()`, `metrics()` and the two table-database URLs, from `connections.yaml`. Every `os.environ[...]` read of an address goes (about 25 places in `ui/`, the CLIs, `sql/database.py`, `sql/bootstrap.py`) along with the `services()` copies in the pages.
+- [x] 4. Dagster: delete `resources/`. Each asset gets its clients from `clients.py` and its settings from `settings.load()` when the run starts, and refuses to run when the name already exists with other settings. The sensor keeps its check, so a bad file fails the tick with the reason and no PDF is registered. Runs no longer carry run config: re-running a document is one click, with no launchpad form to fill.
+- [x] 5. Write the three files from today's defaults. Delete `config/ingest.yaml`.
+- [x] 6. Compose: mount `./config` read-only into the UI and the Dagster services. The environment block shrinks to the passwords, `DATA_DIR` and `RAG_CONFIG_DIR`. `.env.example` lists only passwords.
+- [x] 7. Tests: three for the loader (`${NAME}` is replaced and a missing one is an error, an unknown key names its file, an embedding model brings its family's templates). Run the suite once.
 
 **Done when:** changing `reranker.model` in `llm.yaml` and restarting the UI changes the reranker recorded in the next chat turn's settings; a misspelled key stops the start with a message naming the file and the key; and a PDF dropped after changing `chunk.strategy` and `name` lands in the new collection. Checked once.
 
-Reading rule to document: Dagster reads the files at every sensor tick and every run, so an edit needs no restart. The UI reads them when it starts, so an edit needs `docker compose restart ui`.
+Reading rule: Dagster reads the files at every sensor tick and every run, so an edit needs no restart. The Chatbot reads `llm.yaml` at every question. The UI keeps its clients while it runs, so an edit of `connections.yaml` needs `docker compose restart ui`.
+
+**Status (2026-10-08): Phase 3 is done.** The suite passes (43 tests, run once). Checked on the running stack:
+
+- The experiment built from the three files has the same hash as the one stored for `test-ingest`, so nothing had to be ingested again.
+- With `reranker.model` set to the 0.6B build, the Chatbot page offered it by default and the next turn was saved with it in its settings (and abstained with a best score of 0.000, as that build does). The file was put back.
+- A misspelled `chunk.stratgy` stopped the `setup` service with `/app/config/pipeline.yaml: chunk.stratgy: unknown key`, exit code 1.
+- With `name: refactor-check` and `chunk.strategy: recursive`, a new one-page PDF put into `data/raw/` was started by the sensor (no run config) and landed in the collection `refactor-check`. The PDF, the experiment and its partition were removed afterwards and the file was put back.
+- The same name with another `max_tokens` is refused with the reason by every stage.
+- The search, agent and `rag_lab.sql` command lines work with the new clients.
+
+Built differently from the plan:
+
+- `candidates` is under `documents_chat`, not `reranker`: it belongs to the search, and the classes map to the file key for key. `chat` is the shared section; a chat's own section wins.
+- The Ollama address is `${OLLAMA_BASE_URL}` in `connections.yaml`, since it can be a private address; `.env.example` therefore still lists it next to the passwords.
+- The database and role names of the tables database are read from the URLs in `connections.yaml`; nothing in the code names `rag_data`, `rag_loader` or `rag_reader` any more.
+- Good answers are embedded with `llm.yaml`'s `embedding` (before: always `qwen3-embedding:0.6b`). `examples_min_score` (0.55) was chosen with that model; look at the scores again when examples exist.
+- `./config` is mounted into `setup`, `dagster-code` and `ui`, the three that run our code; the Dagster webserver and daemon do not need it.
+- `RerankerConfig` is a section of its own inside `SearchConfig`, and `AgentConfig` holds `candidates` and `reranker` directly, so a saved turn's settings name the reranker model.
 
 ### Phase 4: CSV files through Dagster
 
-- [ ] 1. Folder: `data/tables/<schema>/<table>.csv`. The folder name is the schema, the file name (cleaned) is the table. An optional `data/tables/<schema>/_schema.yaml` holds the dataset's description, each table's and column's description, and a column type to use instead of the guessed one.
-- [ ] 2. `assets/tables.py`: an asset `imported_table`, one partition per `schema.table`, and `tables_job`. The body creates the schema if missing, reads names and types with `parse_sample`, imports with `import_csv(replace=True)` and writes the descriptions. A bad row fails the run with the importer's message (`COPY orders, line 3001, column total`) and leaves the old table.
-- [ ] 3. `new_csv_sensor`: a run for each CSV that is new or whose content (or `_schema.yaml`) changed, keyed by the content hash, so the same file is never imported twice. A file still being copied waits for a later tick.
-- [ ] 4. `sql/`: remove the copy under `data/csv/` (the file in `data/tables/` is the source). `ImportConfig` loses `preview_rows`.
-- [ ] 5. `python -m rag_lab.sql`: add `drop --schema <name> [--table <name>]` and `examples --remove <id>`, since the page that did these is gone.
+- [x] 1. Folder: `data/tables/<schema>/<table>.csv`. The folder name is the schema, the file name (cleaned) is the table. An optional `data/tables/<schema>/_schema.yaml` holds the dataset's description, each table's and column's description, and a column type to use instead of the guessed one.
+- [x] 2. `assets/tables.py`: an asset `imported_table`, one partition per `schema.table`, and `tables_job`. The body creates the schema if missing, reads names and types with `parse_sample`, imports with `import_csv(replace=True)` and writes the descriptions. A bad row fails the run with the importer's message (`COPY orders, line 3001, column total`) and leaves the old table.
+- [x] 3. `new_csv_sensor`: a run for each CSV that is new or whose content (or `_schema.yaml`) changed, keyed by the content hash, so the same file is never imported twice. A file still being copied waits for a later tick.
+- [x] 4. `sql/`: remove the copy under `data/csv/` (the file in `data/tables/` is the source). `ImportConfig` loses `preview_rows`.
+- [x] 5. `python -m rag_lab.sql`: add `drop --schema <name> [--table <name>]` and `examples --remove <id>`, since the page that did these is gone.
 
 **Done when:** a CSV put into `data/tables/sales/` becomes a table; `python -m rag_lab.sql schema --schema sales` prints it with a description from `_schema.yaml`; editing the CSV imports it again; a CSV with a bad row fails its run and the old table is still there. Checked once.
 
+**Status (2026-10-08): Phase 4 is done.** Checked on the running stack with a sample dataset, `data/tables/sales/` (`customers.csv`, `orders.csv` and a `_schema.yaml`), which is still there for Phase 5:
+
+- The sensor imported both files (6 and 12 rows). `python -m rag_lab.sql schema --schema sales` prints the dataset's, the tables' and the columns' descriptions from `_schema.yaml`, the guessed types and a likely join.
+- A row appended to `orders.csv` imported the file again: 13 rows.
+- A row with one field too many failed its run with `extra data after last expected column. COPY orders, line 15`, and the table kept its 13 rows.
+- `drop --schema scratch --table my_notes` and `drop --schema scratch` removed a throwaway table and schema (the file `My Notes.csv` had become the table `my_notes`); `examples --remove 99` says there is no such example.
+- `python -m rag_lab.agent sql "What is the total of shipped orders for each country?" --schema sales` wrote a join, ran it as the reader and answered with the right totals.
+
+Built differently from the plan:
+
+- The folder logic is plain Python in `sql/folder.py` (the files, `_schema.yaml`, `import_file`); `assets/tables.py` is only the asset. The partitions, the job and the sensor are in the existing `partitions.py`, `jobs.py` and `sensors.py`.
+- The sensor asks for a run of every settled file at every tick and Dagster skips the run keys it has already seen, so there is no cursor to keep.
+- `_schema.yaml` may describe a table whose file is not there yet (so the YAML can be written first); a column it names that the file does not have is an error.
+- A folder whose name cannot be a schema, or two files that give the same table name, are reported by the sensor and skipped; the other files are still imported.
+- No tests were added or run: the importer's tested logic (names, types, delimiter) did not change.
+
 ### Phase 5: the Chatbot sidebar
 
-- [ ] 1. The sidebar holds only: **New chat**; **Search in** (*Vector database* or *Relational database*, then which collection or schema, both locked after the first question as today); **Chat history** (the past chats, with the delete of the open chat).
-- [ ] 2. The chat model, thinking, reranker, top k, candidates and the picture toggle leave the page. Both agents are built from `llm.yaml`.
-- [ ] 3. One check when the page loads: the models named in `llm.yaml` are installed in Ollama, and `chat.think` and `documents_chat.show_pictures` are only on for a model that can do them. A problem is shown with the YAML key to change, not a failed turn.
-- [ ] 4. Experiments page: wording for the new flow (a PDF goes into `data/raw/`). A document deleted from a collection keeps its Dagster partition, so it is ingested again by re-running that partition, not by the sensor; the page says so.
+- [x] 1. The sidebar holds only: **New chat**; **Search in** (*Vector database* or *Relational database*, then which collection or schema, both locked after the first question as today); **Chat history** (the past chats, with the delete of the open chat).
+- [x] 2. The chat model, thinking, reranker, top k, candidates and the picture toggle leave the page. Both agents are built from `llm.yaml`.
+- [x] 3. One check when the page loads: the models named in `llm.yaml` are installed in Ollama, and `chat.think` and `documents_chat.show_pictures` are only on for a model that can do them. A problem is shown with the YAML key to change, not a failed turn.
+- [x] 4. Experiments page: wording for the new flow (a PDF goes into `data/raw/`). A document deleted from a collection keeps its Dagster partition, so it is ingested again by re-running that partition, not by the sensor; the page says so.
 
 **Done when:** in the browser, a new chat on each source answers, the sidebar shows only the three things, a refresh reopens the chat, and a thumbs-up on a database answer is remembered. Looked at once.
 
+**Status (2026-10-08): Phase 5 is done, and looked at in Chrome** (this also closes the by-eye checks left open in Phases 1 and 2):
+
+- The sidebar holds *New chat*, *Search in* with its collection or schema, and *Chat history* with *Delete this chat*. No model, reranker, top k or toggle is left on the page.
+- A new chat on the vector database answered with citations while the status panel showed the search step; its source was then greyed out with the note that a chat keeps what it searches.
+- A new chat on the relational database (`sales`) answered "Lena Fischer" with the SQL under it, which is right.
+- A refresh on the same `?chat=` reopened each chat. *Good answer* was saved (a row in `sql_examples`, a point in `sqlexamples__sales`) and showed as *Marked as a good answer* after a refresh.
+- The Experiments page shows the new wording and the one collection.
+
+Found while checking: **`examples_min_score` was too low for the embedding model in use.** With `embeddinggemma-2:740m`, questions of the same kind as the saved one scored 0.89 to 0.94, other questions about the same tables 0.66 to 0.72, and an unrelated one 0.55, so 0.55 showed the example to everything. `config/llm.yaml` now sets 0.8 (one example and nine questions, so a small sample); the default in `config.py` stays 0.55, which was chosen with `qwen3-embedding:0.6b`.
+
+Built differently from the plan:
+
+- A model named in `llm.yaml` that Ollama does not have stops the chat with the model and the key to change. A model that cannot think, or cannot see images, does not stop it: that setting is switched off for the chat and a note under the messages says so.
+- The check also covers the embedding model the collection was made with, since a question is embedded with it.
+
+Left in the stack: the chats made while checking (in *Chat history*), the `sales` sample dataset and its one good answer.
+
 ### Phase 6: documents and leftovers
 
-- [ ] 1. Rewrite `CLAUDE.md` and `README.md` to describe what is in the repo (both become much shorter). Move `PLAN.md` and `COMPLETED_PLAN.md` to `docs/history/`.
-- [ ] 2. One pass for dead names (`benchmark`, `upload`, `tag`, `engine`, `INGEST_CONFIG`) and unused imports (`ruff check`).
-- [ ] 3. Compose: pin `qdrant/qdrant` to a version instead of `latest`, and `restart: unless-stopped` on the services.
+- [x] 1. Rewrite `CLAUDE.md` and `README.md` to describe what is in the repo (both become much shorter). Move `PLAN.md` and `COMPLETED_PLAN.md` to `docs/history/`.
+- [x] 2. One pass for dead names (`benchmark`, `upload`, `tag`, `engine`, `INGEST_CONFIG`) and unused imports (`ruff check`).
+- [x] 3. Compose: pin `qdrant/qdrant` to a version instead of `latest`, and `restart: unless-stopped` on the services.
+
+**Status (2026-10-08): Phase 6 is done.**
+
+- `CLAUDE.md` and `README.md` are rewritten for the system as it is (`CLAUDE.md` went from 63 KB to 21 KB). `PLAN.md` and `COMPLETED_PLAN.md` are in `docs/history/`, unchanged.
+- The pass for dead names found three stale comments (compose, `pyproject.toml`) and nothing in the code; `ruff check --select F` is clean.
+- Compose: Qdrant is pinned to `v1.19.1` (the version `latest` was), and every service but the one-shot `setup` has `restart: unless-stopped`. The stack was recreated with it and both pages load.
+
+Also changed, since nothing uses them any more: the UI no longer mounts the model cache or waits for `dagster-code`.
+
+Not done, and worth knowing:
+
+- `uv.lock` still lists `reportlab` and `ipykernel`. It was already behind `pyproject.toml` before the refactor, and the image is built from `pyproject.toml`, not from the lock. `uv lock` brings it up to date (it rewrites about 2,000 lines).
+- The image carries about 2 GB of `uv`'s download cache (the Dockerfile installs with `uv` and leaves it in `/root/.cache`). `ENV UV_NO_CACHE=1` in the Dockerfile removes it at the next build; it belongs with Phase 7.
+- `restart: unless-stopped` means this stack comes back when Docker starts. It binds the same ports as the `rag-dagster` stack, so stop one before starting the other (`docker compose stop`).
 
 ### Phase 7 (optional): a small image for the UI
 

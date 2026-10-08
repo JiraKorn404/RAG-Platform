@@ -1,22 +1,22 @@
 x-dagster-env: &dagster-env
   DAGSTER_HOME: /opt/dagster/dagster_home
-  POSTGRES_USER: ${POSTGRES_USER}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
   DATA_DIR: /app/data
-  # The experiment a PDF put into data/raw is ingested with; the sensor reads it at every tick.
-  INGEST_CONFIG: /app/config/ingest.yaml
+  # The settings: connections.yaml, pipeline.yaml and llm.yaml (see src/rag_lab/settings.py).
+  RAG_CONFIG_DIR: /app/config
   # LlamaIndex's sentence splitter downloads NLTK data on first use; keep it in the model_cache volume.
   NLTK_DATA: /root/.cache/nltk_data
-  QDRANT_URL: http://qdrant:6333
-  METRICS_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/rag_metrics
-  # The database for imported tables: one role loads data, one only reads (see src/rag_lab/sql/).
-  SQL_LOADER_URL: postgresql://rag_loader:${SQL_LOADER_PASSWORD}@postgres:5432/rag_data
-  SQL_READER_URL: postgresql://rag_reader:${SQL_READER_PASSWORD}@postgres:5432/rag_data
+  # What config/connections.yaml refers to as ${NAME}. They come from .env, so passwords and private
+  # addresses stay out of git. Dagster's own storage (docker/dagster/dagster.yaml) reads POSTGRES_* too.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  SQL_LOADER_PASSWORD: ${SQL_LOADER_PASSWORD}
+  SQL_READER_PASSWORD: ${SQL_READER_PASSWORD}
 
 services:
   postgres:
     image: postgres:17
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -33,7 +33,8 @@ services:
 
   # Named volume only: a Windows bind mount can corrupt Qdrant's data.
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.1
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
@@ -51,19 +52,22 @@ services:
     environment: *dagster-env
     volumes:
       - ./src:/app/src
+      - ./config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
 
+  # Our code as Dagster sees it: the assets, the jobs and the two sensors. Runs execute here.
   dagster-code:
     image: rag-platform:latest
+    restart: unless-stopped
     command: dagster api grpc -h 0.0.0.0 -p 4000 -m rag_lab.definitions
     environment: *dagster-env
     volumes:
       - ./src:/app/src
       - ./data:/app/data
       - ./config:/app/config:ro
-      # Docling model downloads (Hugging Face + Docling's own cache) land here, not in the image.
+      # Docling's models, the tokenizers and NLTK data are downloaded here, not into the image.
       - model_cache:/root/.cache
       - dagster_storage:/opt/dagster/storage
       # The instance settings are mounted over the copy in the image, so an edit needs a restart, not a build.
@@ -76,6 +80,7 @@ services:
 
   dagster-webserver:
     image: rag-platform:latest
+    restart: unless-stopped
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
     environment: *dagster-env
     ports:
@@ -89,8 +94,10 @@ services:
       dagster-code:
         condition: service_started
 
+  # Ticks the sensors and starts the queued runs.
   dagster-daemon:
     image: rag-platform:latest
+    restart: unless-stopped
     command: dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
     environment: *dagster-env
     volumes:
@@ -102,9 +109,10 @@ services:
       dagster-code:
         condition: service_started
 
-  # Dashboard over rag_metrics and a page for trying queries across experiments.
+  # The Streamlit app: the Experiments page and the Chatbot.
   ui:
     image: rag-platform:latest
+    restart: unless-stopped
     command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
     working_dir: /app/ui # so Streamlit finds ui/.streamlit/config.toml
     environment: *dagster-env
@@ -113,16 +121,14 @@ services:
     volumes:
       - ./src:/app/src
       - ./ui:/app/ui
-      # The upload page parses, chunks and embeds in this container: uploads and artifacts under
-      # ./data, and Docling's models and the Qwen3 tokenizer in the shared cache volume.
+      - ./config:/app/config:ro
+      # The pictures of picture chunks are read from data/artifacts, and deleting a document or an
+      # experiment removes its files there.
       - ./data:/app/data
-      - model_cache:/root/.cache
     depends_on:
       setup:
         condition: service_completed_successfully
       qdrant:
-        condition: service_started
-      dagster-code:
         condition: service_started
 
 volumes:

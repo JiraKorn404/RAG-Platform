@@ -1,0 +1,27 @@
+# What a PDF put into data/raw goes through, and the limits for CSV files.
+#
+# A key left out keeps its default (src/rag_lab/config.py). An unknown key is an error, shown on the
+# sensor in the Dagster UI. Dagster reads this file at every sensor tick and every run, so an edit
+# needs no restart.
+#
+# `name` is the experiment, which is also the Qdrant collection. Settings cannot change under a name:
+# to change one (here, or the `embedding` section of llm.yaml), change `name` too. PDFs that arrive
+# from then on go into the new collection.
+name: technical-doc
+
+parse:                  # Docling
+  table_mode: accurate  # fast or accurate
+  ocr: false            # true: scanned pages are read with the OCR model of llm.yaml (about 18 s a page)
+  pictures: true       # true: each picture becomes a chunk; needs an embedding model that takes images
+
+chunk:
+  strategy: hybrid      # hybrid, hierarchical, fixed, recursive or semantic
+  max_tokens: 512
+  overlap: 0            # tokens; only `fixed` uses it
+
+index:
+  sparse: true          # a BM25 vector, needed by the Chatbot's hybrid search; cannot be added later
+
+tables:                 # CSV files put into data/tables/<schema>/ (one file is one table)
+  max_bytes: 52428800   # 50 MB
+  max_rows: 1000000

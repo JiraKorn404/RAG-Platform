@@ -1,128 +1,160 @@
-# RAG-Dagster
+# RAG-Platform
 
-A RAG lab for PDF documents (text and tables). Upload a document, choose how it is chunked, embed it into a vector database, search it, ask questions of it in a chatbot, and benchmark embedding models, chunking strategies and search strategies against each other.
+A chatbot over your documents and your tables.
 
-- **Parsing:** Docling (read through LlamaIndex's `DoclingReader`)
-- **Chunking:** LlamaIndex splitters or our own (`hybrid`, `hierarchical`, `fixed`, `recursive`, `semantic`)
-- **Embedding and reranking:** Ollama (`qwen3-embedding` or `embeddinggemma-2`, `Qwen3-Reranker`)
-- **Vector database:** Qdrant (dense vectors plus an optional BM25 sparse vector)
-- **Chatbot:** LangGraph and `langchain-ollama` with `gemma4:e4b-mlx`
-- **UI:** Streamlit. **Batch ingestion:** Dagster. **Metrics:** PostgreSQL
+- **PDF documents** go into a vector database, and the chatbot answers from the passages it finds, with citations.
+- **CSV files** become tables in a relational database, and the chatbot writes a SQL query, checks it, runs it read-only and answers from the rows.
 
-A PDF with a text layer is read as it is. A scanned PDF can be read with OCR (`glm-ocr` on Ollama), and the pictures in a PDF can be indexed so that a question finds a figure (`embeddinggemma-2`); both are options on the Upload page.
+Ingestion is automatic: put a file in a folder and Dagster does the rest. Everything is configured in three YAML files.
 
-## Architecture
+| Part | Uses |
+|---|---|
+| Parsing | Docling |
+| Chunking | Docling's chunkers and LlamaIndex splitters (`hybrid`, `hierarchical`, `fixed`, `recursive`, `semantic`) |
+| Embedding, reranking, chat, OCR | Ollama |
+| Vector database | Qdrant (dense vectors and a BM25 keyword vector) |
+| Relational database, chats, metrics | PostgreSQL |
+| Orchestration | Dagster |
+| UI | Streamlit |
 
 ```
-upload / data/raw/*.pdf -> parse (Docling) -> chunk -> embed (Ollama) -> index (Qdrant) -> search
-                                                                               |
-                                                         metrics -> PostgreSQL (rag_metrics)
+data/raw/*.pdf              -> parse -> chunk -> embed -> index -> Qdrant collection
+data/tables/<schema>/*.csv  -> import                             -> PostgreSQL schema
 
-Chatbot: question -> condense -> hybrid search + rerank -> grade -> answer with citations
-                                      ^                       |
-                                      +---- rewrite <---------+  (not enough: retry once, then say so)
+Chatbot, vector database:      question -> hybrid search + rerank -> answer with citations
+Chatbot, relational database:  question -> SQL -> check -> run read-only -> answer
 ```
-
-| Service | Where | Address |
-|---|---|---|
-| Streamlit UI | Docker | http://localhost:8501 |
-| Dagster | Docker | http://localhost:3000 |
-| Qdrant | Docker | http://localhost:6333/dashboard |
-| PostgreSQL | Docker | `localhost:5432` (databases `dagster` and `rag_metrics`) |
-| Ollama | wherever `OLLAMA_BASE_URL` points (this project runs it on a Mac over Tailscale) | `OLLAMA_BASE_URL` |
 
 ## Requirements
 
-- Docker with Compose
-- An Ollama server, version 0.35 or newer (the reranker needs `logprobs`), reachable from the containers. If it is on another machine it must listen on all interfaces (`OLLAMA_HOST=0.0.0.0`), and you should use its IP address, not a MagicDNS name.
-- These Ollama models:
+- Docker with Compose.
+- An Ollama server, version 0.35 or newer (the reranker needs `logprobs`), reachable from the containers. If it is on another machine it must listen on all interfaces (`OLLAMA_HOST=0.0.0.0`); use its IP address, not a name.
+- These Ollama models (the ones `config/llm.yaml` names; change the file to use others):
 
   ```
-  ollama pull qwen3-embedding:0.6b                   # also :4b and :8b if you want to compare them
-  ollama pull embeddinggemma-2:740m                  # optional: a second embedding model family, and the one that can index pictures
-  ollama pull dengcao/Qwen3-Reranker-4B:Q8_0         # the reranker (Q4_K_M also works)
-  ollama pull gemma4:e4b-mlx                         # the chatbot's model
+  ollama pull embeddinggemma-2:740m                  # embedding (or qwen3-embedding:0.6b, :4b, :8b)
+  ollama pull dengcao/Qwen3-Reranker-4B:Q8_0         # the reranker; the 0.6B builds do not work
+  ollama pull gemma4:e4b-mlx                         # the chat model
   ollama pull glm-ocr:bf16                           # only for OCR of scanned PDFs
   ```
-
-  The 0.6B reranker builds do not work: they give every chunk a score of 0.
 
 ## Getting started
 
 ```powershell
-copy .env.example .env      # then set OLLAMA_BASE_URL, POSTGRES_USER, POSTGRES_PASSWORD, SQL_LOADER_PASSWORD and SQL_READER_PASSWORD
+copy .env.example .env      # then set OLLAMA_BASE_URL and the four passwords (letters and digits only)
 docker compose up -d --build
 ```
 
-The first start is slow: the code container takes about 50 s because it imports Docling, and Docling downloads its models on first use. Open http://localhost:8501.
+The first start is slow: the image is several GB, the Dagster code container takes about 50 s to start, and Docling downloads its models on the first PDF.
+
+| Open | For |
+|---|---|
+| http://localhost:8501 | The UI: Experiments and Chatbot |
+| http://localhost:3000 | Dagster: the ingestion runs and the two sensors |
+| http://localhost:6333/dashboard | Qdrant |
+
+## Adding documents
+
+Put a PDF in `data/raw/`. Within about a minute a sensor starts `ingest_job` for it, which parses, chunks, embeds and indexes it into the collection named in `config/pipeline.yaml`. Watch the run in Dagster.
+
+- Only a new PDF starts a run. A document is known by its content, so a renamed copy is not new.
+- A PDF whose run failed is not retried automatically: fix the cause, then run its partition of `ingest_job` in Dagster.
+- A scanned PDF needs `parse.ocr: true` in `config/pipeline.yaml`. To make the pictures of a PDF searchable, set `parse.pictures: true` (needs `embeddinggemma-2`).
+
+## Adding tables
+
+Put a CSV file in `data/tables/<schema>/`. The folder is the dataset (a PostgreSQL schema) and each file becomes a table named after it. A sensor imports every file that is new or has changed.
+
+- The file must be UTF-8 with a header row. Column types are guessed; a file with a bad row fails its run with the line number and leaves the existing table as it was.
+- The limits (50 MB, 1,000,000 rows) are in `config/pipeline.yaml`.
+- An optional `_schema.yaml` in the folder describes the data for the model, which makes its SQL better, and can set a column's type:
+
+  ```yaml
+  description: Orders of the web shop, 2023 to 2024
+  tables:
+    orders:
+      description: One row per order
+      columns:
+        order_total: {description: "Order total in baht, with VAT", type: double precision}
+        status: {description: "Shipped, Cancelled or Open"}
+  ```
+
+To see what the model is given about a dataset, and to remove one:
+
+```powershell
+docker compose exec dagster-code python -m rag_lab.sql schema --schema <name>
+docker compose exec dagster-code python -m rag_lab.sql drop --schema <name> [--table <name>]
+```
+
+Dropping does not touch the CSV files.
 
 ## The UI
 
-| Page | What it does |
+**Experiments** lists the collections of the vector database with the documents in each. Delete a document from a collection, or a whole collection.
+
+**Chatbot.** The sidebar has three things:
+
+- **New chat.**
+- **Search in:** the vector database (and which collection) or the relational database (and which schema). The choice is fixed once the chat has its first question.
+- **Chat history:** every past chat; opening one shows it as it was answered.
+
+Under each answer, *How this was answered* shows the steps, the timings, the model's thinking, and the retrieved passages or the SQL attempts. Under a database answer, **Good answer** keeps the question and its SQL as an example the model is shown for similar questions later.
+
+When the documents do not answer a question the chatbot tries one other query and otherwise says it found nothing.
+
+## Configuration
+
+| File | What is in it |
 |---|---|
-| **Experiments** | Lists every experiment with the PDFs in it. Delete a PDF from an experiment, or a whole experiment. |
-| **Upload** | Upload a PDF, pick a chunking strategy and its settings, see where the cuts fall in the document, and embed it into a new or existing experiment. Tick *Add a BM25 keyword vector* if you want hybrid search later; it cannot be added to an experiment afterwards. Tick *Read scanned pages with OCR* for a PDF without a text layer: the regions that have no text are read by `glm-ocr`, and pages that have a text layer keep it. With `embeddinggemma-2` chosen, tick *Index the pictures* and each picture becomes a chunk embedded from the image and its caption; Try a query then shows it, and *Content: picture* searches the pictures only. |
-| **Try a query** | Pick an experiment and a search strategy (`dense`, `hybrid`, `dense+rerank`, `hybrid+rerank`), set top k, and see the chunks with their scores and timings. |
-| **Chatbot** | Ask questions of your documents or of your tables. A new chat starts with *Search in*: **Documents** (an experiment with a BM25 vector; the answer is written from the top chunks of a hybrid search with reranking, with `[n]` citations) or **Database** (a schema of imported tables; the model writes a SELECT, it is checked and run read-only, and the answer is written from the rows, with the SQL shown under it; click **Good answer** under one that is right and it is kept as an example the model is shown for similar questions later). The choice is fixed for the whole chat: to search somewhere else, start a new chat. The page shows what happens as it happens: each step, the model's thinking, the retrieved chunks and scores, how full the model's context is, and how long each step took. If the documents do not answer the question it retries once with a different query, and otherwise says so. When a retrieved chunk is a picture (an experiment made with *Index the pictures*), the model is shown the picture itself and can answer from what is in it; *Show pictures to the model* turns that off. |
-| **Database** | Import CSV files into a schema of the database for imported tables (UTF-8, first row the header, up to 50 MB and 1,000,000 rows each). Each file shows a preview and the column types it guessed, which you can change, and a table name. A bad row stops the import and leaves nothing behind. Below, what each table holds (with descriptions you can write), what the model is given about the schema, the good answers saved for it (turn one off or delete it), and deletes for a table or a schema. |
-| **Benchmark** | Runs one document through every chosen embedding model, chunking strategy and search strategy, and saves a report with a PDF download. |
+| `config/connections.yaml` | Where Ollama, Qdrant and the databases are. Passwords are written as `${NAME}` and come from `.env`. |
+| `config/pipeline.yaml` | The collection's name, Docling's options, the chunking strategy, the index, the CSV limits. |
+| `config/llm.yaml` | Every model and how it is called: embedding, OCR, reranker, the chat model, and the settings of each kind of chat. |
 
-## Batch ingestion with Dagster
+A key left out keeps its default. A misspelled key stops the start with a message that names the file and the key.
 
-Put a PDF in `data/raw/`. Within about a minute a sensor starts `ingest_job` for it, which runs parse, chunk, embed and index into the experiment written in `config/ingest.yaml`; watch it in the Dagster UI (http://localhost:3000). PDFs that arrive together are ingested one after another.
-
-`config/ingest.yaml` is one experiment: its name (also the Qdrant collection), and the parse, chunk, embed and index settings. A key left out keeps its default and an unknown key is an error, shown on the sensor in the Dagster UI. The file is read each time a new PDF arrives, so an edit needs no restart. Settings cannot change under the same name: to change one, change `name` too, and the PDFs that arrive from then on go into the new experiment.
-
-Only a PDF that is new starts a run (its id is the first 16 hex characters of the file's SHA-256, so a renamed copy is not new). For a PDF that was already in the folder, or one whose run failed, launch `ingest_job` for its partition in the Dagster UI with the experiment set in the run config under `resources.experiment.config`, or use *Re-execute* on the failed run. See `CLAUDE.md` for the config keys.
+- A collection keeps the settings it was made with. To change a pipeline setting or the embedding model, change `name` in `pipeline.yaml` too: new PDFs then go into the new collection. To move the existing PDFs, run their partitions of `ingest_job` in Dagster.
+- An edit to `pipeline.yaml` or `llm.yaml` needs no restart. After an edit to `connections.yaml`, run `docker compose restart ui`.
 
 ## Command line
 
 ```powershell
-# search an experiment
+# search a collection
 docker compose exec dagster-code python -m rag_lab.search "query text" --experiment <name> --top-k 5
 
-# the chatbot, with every step printed (no question = a chat loop that keeps history)
+# the two chatbots, with every step printed (no question = a chat loop)
 docker compose exec dagster-code python -m rag_lab.agent documents "question" --experiment <name>
-
-# the text-to-SQL agent over a schema of imported tables, every step printed
 docker compose exec dagster-code python -m rag_lab.agent sql "question" --schema <name>
-```
 
-`notebook/search.ipynb` runs searches from a notebook with `rag_lab.search.quick.ask`.
+# the good answers saved for a schema
+docker compose exec dagster-code python -m rag_lab.sql examples [--schema <name>] [--reindex] [--remove <id>]
+```
 
 ## Common commands
 
 ```powershell
 docker compose up -d --build          # start the stack (rebuild after changing dependencies)
 docker compose restart ui             # after editing a UI module other than a page script
-docker compose logs -f dagster-code   # code location logs
-docker compose down                   # stop; add -v to wipe the Qdrant and Postgres volumes
-docker compose exec postgres psql -U <user> -d rag_metrics   # inspect the metrics
-uv run pytest                         # the few pure-logic tests; no containers needed
+docker compose logs -f dagster-code   # ingestion logs
+docker compose down                   # stop; add -v to wipe every volume, the model cache included
+docker compose exec postgres psql -U <user> -d rag_metrics   # inspect chats and metrics
 ```
 
-`./src` and `./ui` are mounted into the containers, so code changes show up without a rebuild. Qdrant's data lives in a Docker named volume, not a bind mount; a bind mount to the Windows filesystem can corrupt it.
+`./src`, `./ui` and `./config` are mounted into the containers, so changes show up without a rebuild.
 
 ## How it is organised
 
 ```
+config/           connections.yaml, pipeline.yaml, llm.yaml
 src/rag_lab/
-  config.py       experiment, search and agent settings (also Dagster run config)
-  ingest.py       the stage bodies shared by Dagster, the Upload page and the benchmark
-  parsing/  chunking/  embedding/  reranking/  storage/  search/
-  agent/          the chatbot: shared events, model and runner; documents/ is the flow for documents; a CLI per flow
-  benchmark/      runner, report data, PDF
-  metrics/        timings, retrieval metrics, the Postgres store and its migrations
-  assets/         Dagster assets, jobs and the sensor
-ui/               the Streamlit app, one script per page
-data/             raw/ (Dagster input), uploads/ (UI uploads), artifacts/ (per-stage outputs); git-ignored
+  config.py  settings.py  clients.py     the settings and the clients built from them
+  parsing/  chunking/  embedding/  reranking/  storage/  search/     the document pipeline
+  sql/            the tables side: import, the schema as text, the SQL guard, good answers
+  agent/          the two chatbots (documents/ and sql/) and what they share
+  metrics/        the Postgres store and its migration
+  assets/         the Dagster assets, jobs and sensors
+ui/               the Streamlit app: experiments.py and chat.py
+data/             raw/ (PDFs), tables/ (CSV files), artifacts/ (per-stage outputs); git-ignored
 tests/            a few pure-logic tests
 ```
 
-Each stage is plain Python with no Dagster or Streamlit imports, and every stage choice is a config value. There is one Qdrant collection per experiment, named after it, so runs with different settings never mix vectors.
-
-## More documentation
-
-- `CLAUDE.md`: the technical reference (design rules, how each part works, the facts that are easy to get wrong).
-- `PLAN.md`: the plan for the current work (the BM25 option on Upload and the chatbot, Phases 14 to 18), the ideas and the deferred items.
-- `COMPLETED_PLAN.md`: the history of Phases 0 to 13.
+`CLAUDE.md` is the technical reference: the design rules, how each part works, and the facts that are easy to get wrong.

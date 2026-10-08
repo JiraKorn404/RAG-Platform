@@ -1,7 +1,6 @@
 """What the command-line interfaces of every flow share: the printing of a turn's events as they arrive,
 and the chat loop."""
 
-import os
 import sys
 import uuid
 
@@ -28,13 +27,6 @@ from rag_lab.agent.run import Flow, run
 from rag_lab.metrics.store import MetricsStore
 
 DIM, RESET = "\033[2m", "\033[0m"
-
-
-def env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        sys.exit(f"{name} is not set")
-    return value
 
 
 class Printer:

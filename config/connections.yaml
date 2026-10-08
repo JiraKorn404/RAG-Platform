@@ -1,0 +1,28 @@
+# Where every service is. To use another server, change its line here.
+#
+# ${NAME} is replaced with the environment variable of that name, which the containers get from .env:
+# passwords and private addresses stay there, out of git. The passwords go into a URL, so they may only
+# have letters and digits.
+#
+# After an edit: Dagster reads this file at its next sensor tick or run; the UI needs
+# `docker compose restart ui`.
+
+ollama:
+  url: ${OLLAMA_BASE_URL}       # for an Ollama on this machine: http://host.docker.internal:11434
+
+qdrant:
+  url: http://qdrant:6333
+
+# Chats, metrics and the registry of imported tables. This role also creates the two databases and the
+# two roles below when the stack starts (python -m rag_lab.setup), so it must be allowed to.
+app_database:
+  url: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/rag_metrics
+
+# The imported CSV tables. The loader role creates and fills tables; the reader role can only SELECT
+# and is what runs the chatbot's SQL.
+tables_database:
+  loader_url: postgresql://rag_loader:${SQL_LOADER_PASSWORD}@postgres:5432/rag_data
+  reader_url: postgresql://rag_reader:${SQL_READER_PASSWORD}@postgres:5432/rag_data
+
+# Not here: Dagster's own database. Dagster reads it from docker/dagster/dagster.yaml, which uses the
+# same POSTGRES_USER and POSTGRES_PASSWORD.

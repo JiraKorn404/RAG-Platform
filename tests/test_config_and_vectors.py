@@ -8,9 +8,9 @@ from rag_lab.config import (
     ExperimentConfig,
     ParseConfig,
     SemanticSettings,
-    load_experiment_file,
 )
 from rag_lab.embedding.vectors import truncate_and_normalise
+from rag_lab.settings import ConfigError, load
 
 
 def test_config_hash_changes_with_the_name():
@@ -53,26 +53,64 @@ def test_truncate_keeps_dimension_and_unit_length():
     assert out == [0.6, 0.8]
 
 
-def test_experiment_file_fills_defaults_and_embedding_family(tmp_path):
-    path = tmp_path / "ingest.yaml"
-    path.write_text("name: auto\nembed:\n  model: embeddinggemma-2:740m\nindex:\n  sparse: false\n")
-    config = load_experiment_file(path)
-    assert (config.name, config.index.sparse) == ("auto", False)
-    assert config.chunk == ChunkConfig()  # a section left out keeps its defaults
-    assert config.embed == EmbedConfig.for_model("embeddinggemma-2:740m")
+# --- the settings files (rag_lab/settings.py) ---
 
-    path.write_text("name: auto\nembed:\n  model: embeddinggemma-2:740m\n  tokenizer: other/tokenizer\n")
-    assert load_experiment_file(path).embed.tokenizer == "other/tokenizer"  # what the file sets wins
+CONNECTIONS = """
+ollama: {url: "http://ollama:11434"}
+qdrant: {url: "http://qdrant:6333"}
+app_database: {url: "postgresql://admin:${TEST_DB_PASSWORD}@postgres:5432/rag_metrics"}
+tables_database:
+  loader_url: postgresql://loader:x@postgres:5432/rag_data
+  reader_url: postgresql://reader:x@postgres:5432/rag_data
+"""
 
 
-def test_experiment_file_refuses_unknown_keys_and_unknown_models(tmp_path):
-    path = tmp_path / "ingest.yaml"
-    path.write_text("name: auto\nchunk:\n  stratgy: fixed\n")
-    with pytest.raises(ValueError, match="chunk.stratgy"):
-        load_experiment_file(path)
-    path.write_text("name: auto\nembed:\n  model: qwen3-embeding:0.6b\n")
-    with pytest.raises(ValueError, match="not of a known embedding family"):
-        load_experiment_file(path)
-    path.write_text("chunk:\n  strategy: fixed\n")
-    with pytest.raises(ValueError, match="name"):
-        load_experiment_file(path)
+def write_config(folder, pipeline="name: auto", llm="", connections=CONNECTIONS):
+    for name, text in (("pipeline.yaml", pipeline), ("llm.yaml", llm), ("connections.yaml", connections)):
+        (folder / name).write_text(text, encoding="utf-8")
+    return folder
+
+
+def test_settings_replace_environment_variables_and_refuse_a_missing_one(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    monkeypatch.setenv("TEST_DB_PASSWORD", "secret1")
+    assert load(tmp_path).connections.app_database.url == "postgresql://admin:secret1@postgres:5432/rag_metrics"
+    monkeypatch.delenv("TEST_DB_PASSWORD")
+    with pytest.raises(ConfigError, match="connections.yaml.*TEST_DB_PASSWORD"):
+        load(tmp_path)
+
+
+def test_settings_name_the_file_and_the_key_of_a_mistake(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_DB_PASSWORD", "secret1")
+    for pipeline, llm, message in (
+        ("name: auto\nchunk: {stratgy: fixed}", "", "pipeline.yaml: chunk.stratgy: unknown key"),
+        ("chunk: {strategy: fixed}", "", "pipeline.yaml: name"),
+        ("name: auto", "chat: {modle: x}", "llm.yaml: chat.modle: unknown key"),
+        ("name: auto", "documents_chat: {top_kk: 3}", "llm.yaml: documents_chat.top_kk: unknown key"),
+        ("name: auto", 'embedding: {model: "qwen3-embeding:0.6b"}', "not of a known embedding family"),
+        ("name: auto", "documents_chat: {reranker: {model: x}}", "set it in the `reranker` section"),
+    ):
+        with pytest.raises(ConfigError, match=message):
+            load(write_config(tmp_path, pipeline, llm))
+
+
+def test_settings_put_the_models_of_llm_yaml_where_they_are_used(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_DB_PASSWORD", "secret1")
+    llm = """
+embedding: {model: "embeddinggemma-2:740m"}
+ocr: {model: other-ocr}
+reranker: {model: other-reranker}
+chat: {model: shared-model, num_ctx: 4096}
+database_chat: {num_ctx: 32768}
+"""
+    settings = load(write_config(tmp_path, "name: auto\nparse: {ocr: true}", llm))
+    experiment = settings.experiment
+    assert (experiment.name, experiment.parse.ocr, experiment.parse.ocr_model) == ("auto", True, "other-ocr")
+    assert experiment.chunk == ChunkConfig()  # a section left out keeps its defaults
+    assert experiment.embed == EmbedConfig.for_model("embeddinggemma-2:740m")  # the family's templates
+    assert settings.documents_chat.search.reranker.model == "other-reranker"
+    assert settings.database_chat.embed.model == "embeddinggemma-2:740m"
+    # `chat` is shared, and a chat's own section wins
+    assert (settings.documents_chat.model, settings.documents_chat.num_ctx) == ("shared-model", 4096)
+    assert (settings.database_chat.model, settings.database_chat.num_ctx) == ("shared-model", 32768)
+    assert settings.database_chat.temperature == 0.0  # not set anywhere: the flow's own default

@@ -16,6 +16,7 @@ from rag_lab.embedding.sparse import document_vectors
 from rag_lab.metrics.store import MetricsStore
 from rag_lab.parsing.parse import ParsedDocument
 from rag_lab.paths import artifacts_dir
+from rag_lab.settings import ConfigError, load
 from rag_lab.storage.qdrant import QdrantStore, to_point_id
 
 # Below this many extracted characters per page, the PDF is almost certainly scanned images.
@@ -26,6 +27,18 @@ OCR_DETAILS = ("ocr_regions", "ocr_pages", "ocr_seconds", "ocr_output_tokens", "
 
 class IngestError(Exception):
     """A stage cannot run, for example because the previous stage's files are missing."""
+
+
+def configured_experiment(store: MetricsStore) -> ExperimentConfig:
+    """The experiment config/pipeline.yaml and config/llm.yaml describe now, recorded under its name.
+    Every stage of a run starts with it, so a file edited to other settings under the same name stops
+    the run instead of mixing two sets of settings in one collection."""
+    try:
+        config = load().experiment
+    except ConfigError as e:
+        raise IngestError(str(e)) from e
+    register_experiment(store, config)
+    return config
 
 
 def register_experiment(store: MetricsStore, config: ExperimentConfig) -> str:
@@ -48,7 +61,8 @@ def experiment_conflict(store: MetricsStore, config: ExperimentConfig) -> str | 
         return None
     return (
         f"An experiment named '{config.name}' already exists with other settings. Settings cannot change "
-        "under the same name: choose a new `name` (a new experiment), or put the settings back."
+        "under the same name: choose a new `name` in config/pipeline.yaml (a new experiment), or put the "
+        "settings back."
     )
 
 

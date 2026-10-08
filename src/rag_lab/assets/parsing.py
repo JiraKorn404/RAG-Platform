@@ -1,37 +1,39 @@
 from dagster import AssetExecutionContext, Failure, MaterializeResult, MetadataValue, asset
 
+from rag_lab import clients
 from rag_lab.assets.partitions import documents_partitions
 from rag_lab.documents import scan_raw
-from rag_lab.ingest import OCR_DETAILS, SCANNED_PDF_CHARS_PER_PAGE, record_parse, register_experiment
+from rag_lab.ingest import (
+    OCR_DETAILS,
+    SCANNED_PDF_CHARS_PER_PAGE,
+    IngestError,
+    configured_experiment,
+    record_parse,
+)
 from rag_lab.parsing.parse import parse_pdf
 from rag_lab.paths import artifacts_dir
-from rag_lab.resources import ExperimentResource, MetricsStoreResource, OllamaResource
 
 
 @asset(partitions_def=documents_partitions, group_name="ingestion")
-def parsed_document(
-    context: AssetExecutionContext,
-    experiment: ExperimentResource,
-    metrics: MetricsStoreResource,
-    ollama: OllamaResource,
-) -> MaterializeResult:
+def parsed_document(context: AssetExecutionContext) -> MaterializeResult:
     """Docling parse of one PDF. Output goes to data/artifacts/<experiment>/parse/. Ollama is only
     called when the experiment has `parse.ocr` on."""
-    config = experiment.config()
+    store = clients.metrics()
+    try:
+        config = configured_experiment(store)
+    except IngestError as e:
+        raise Failure(str(e)) from e
     doc_id = context.partition_key
     path = scan_raw().get(doc_id)
     if path is None:
         raise Failure(f"No PDF in data/raw with content hash {doc_id} (changed or removed?)")
-
-    store = metrics.store()
-    config_hash = register_experiment(store, config)
 
     parsed = parse_pdf(
         path,
         doc_id,
         config.parse,
         artifacts_dir(config.name, "parse"),
-        ollama.base_url,
+        clients.ollama_url(),
         lambda done, total: context.log.info(f"OCR: page {done} of the {total} that need it"),
     )
     if parsed.chars_per_page < SCANNED_PDF_CHARS_PER_PAGE:
@@ -40,7 +42,7 @@ def parsed_document(
             + (
                 "OCR was on and found little text."
                 if config.parse.ocr
-                else "This looks like a scanned PDF; set `parse.ocr` to read it."
+                else "This looks like a scanned PDF; set `parse.ocr` in config/pipeline.yaml to read it."
             )
         )
 
@@ -49,7 +51,7 @@ def parsed_document(
     return MaterializeResult(
         metadata={
             "experiment": config.name,
-            "config_hash": config_hash,
+            "config_hash": config.config_hash(),
             "source_file": parsed.source_file,
             "status": parsed.status,
             "pages": parsed.pages,

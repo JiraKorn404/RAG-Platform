@@ -16,7 +16,7 @@ from psycopg import sql
 
 from rag_lab.config import ImportConfig
 from rag_lab.metrics.store import MetricsStore
-from rag_lab.sql.database import check_schema_name, check_table_name, csv_path, loader_url
+from rag_lab.sql.database import check_schema_name, check_table_name, loader_url
 
 TYPES = ("bigint", "double precision", "boolean", "date", "timestamp", "timestamptz", "text")
 DELIMITERS = (",", ";", "\t", "|")
@@ -26,10 +26,10 @@ BIGINT_MAX = 2**63 - 1
 
 
 class CsvError(ValueError):
-    """A file that cannot be imported, with a message for the person who uploaded it."""
+    """A file that cannot be imported, with a message for the person who put it there."""
 
 
-NOT_UTF8 = "The file is not UTF-8. Save it as 'CSV UTF-8' and upload it again."
+NOT_UTF8 = "The file is not UTF-8. Save it as 'CSV UTF-8' and put it in the folder again."
 
 
 # --- names ---------------------------------------------------------------------------------------
@@ -257,7 +257,7 @@ def import_csv(
 
     One transaction: create the table, COPY the file in, check the size and profile the columns, so a bad
     row or a file over the limits leaves nothing behind (and, with `replace`, the old table). A table
-    that exists is refused unless `replace`. The CSV is kept under data/csv/<schema>/ afterwards."""
+    that exists is refused unless `replace`."""
     cfg = cfg or ImportConfig()
     check_schema_name(schema)
     check_table_name(table)
@@ -313,9 +313,6 @@ def import_csv(
         where = (e.diag.context or "").splitlines()[-1] if e.diag.context else ""
         raise CsvError(f"{(e.diag.message_primary or str(e)).strip()}. {where}".strip()) from None
 
-    path = csv_path(schema, table)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
     # The table is loaded and committed by now. If this fails the table exists without a registry row,
     # and importing it again with replace puts that right.
     metrics.upsert_db_table(schema, table, source_file, rows, columns)

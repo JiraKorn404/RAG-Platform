@@ -128,16 +128,15 @@ def state_line(s: ModelState) -> str:
 
 
 def settings_line(settings: dict | None) -> str:
-    """What a turn ran with; a turn saved before the settings were kept only has the model."""
+    """What a turn ran with."""
     if not settings:
         return ""
-    search = settings.get("search") or {}
     parts = [settings.get("model"), f"thinking {'on' if settings.get('think') else 'off'}"]
-    if search:
+    if "reranker" in settings:  # a documents turn
         parts += [
-            search["method"].replace("+", " + "),
-            search["reranker"],
-            f"{search['candidates']} candidates",
+            "hybrid + rerank",
+            settings["reranker"]["model"],
+            f"{settings['candidates']} candidates",
             f"top {settings['top_k']}",
             f"context {settings['num_ctx']}",
         ]

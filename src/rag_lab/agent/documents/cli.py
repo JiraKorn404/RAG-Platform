@@ -4,19 +4,16 @@ Answers from the experiment's documents with hybrid search and reranking, printi
 happens: the query, the retrieved chunks, the model's thinking, the answer and the model's state. Each
 turn is saved to `chat_turns`. Without a question it reads questions from the prompt (an empty line
 ends) and keeps the conversation, so follow-ups work.
-Needs OLLAMA_BASE_URL, QDRANT_URL and METRICS_DATABASE_URL in the environment (already set inside the
-dagster-code container). The experiment must have been made with `index.sparse`."""
+The models and the other settings are those of config/llm.yaml (`chat`, `documents_chat`, `reranker`);
+the options here change one for this run. The experiment must have been made with `index.sparse`."""
 
 import sys
 
+from rag_lab import clients
 from rag_lab.agent.documents.graph import DocumentsFlow, build_graph
-from rag_lab.agent.printer import chat_loop, env
-from rag_lab.config import AgentConfig
-from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.store import MetricsStore
-from rag_lab.reranking import OllamaReranker
+from rag_lab.agent.printer import chat_loop
 from rag_lab.search import load_experiment
-from rag_lab.storage.qdrant import QdrantStore
+from rag_lab.settings import load
 
 
 def add_parser(subparsers) -> None:
@@ -39,21 +36,14 @@ def main(args) -> None:
         **({"think": False} if args.no_think else {}),
         **({"show_pictures": False} if args.no_pictures else {}),
     }
-    cfg = AgentConfig(**overrides)
+    cfg = load().documents_chat.model_copy(update=overrides)
 
-    base_url = env("OLLAMA_BASE_URL")
-    database_url = env("METRICS_DATABASE_URL")
-    metrics = MetricsStore(database_url)
+    metrics = clients.metrics()
     try:
         _, experiment = load_experiment(metrics, args.experiment)
     except ValueError as e:
         sys.exit(str(e))
     graph = build_graph(
-        experiment,
-        OllamaEmbedder(base_url),
-        QdrantStore(env("QDRANT_URL")),
-        OllamaReranker(base_url),
-        base_url,
-        cfg,
+        experiment, clients.embedder(), clients.qdrant(), clients.reranker(), clients.ollama_url(), cfg
     )
     chat_loop(graph, DocumentsFlow(experiment, cfg), metrics, args.question)

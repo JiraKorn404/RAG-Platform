@@ -4,19 +4,17 @@ Answers questions about the tables of an imported schema: the model writes a SEL
 database check it, it runs as the read-only role, and the answer is written from its rows. Every step is
 printed as it happens, and each turn is saved to `chat_turns`. Without a question it reads questions from
 the prompt (an empty line ends) and keeps the conversation, so follow-ups work.
-Needs OLLAMA_BASE_URL, QDRANT_URL, METRICS_DATABASE_URL and SQL_READER_URL in the environment (already set
-inside the dagster-code container). Good answers saved for the schema are shown to the model when a similar
-question is asked; `--no-examples` leaves them out."""
+The model and the other settings are those of config/llm.yaml (`chat`, `database_chat`); the options here
+change one for this run. Good answers saved for the schema are shown to the model when a similar question
+is asked; `--no-examples` leaves them out."""
 
 import sys
 
+from rag_lab import clients
 from rag_lab.agent.events import Event, SqlChecked
-from rag_lab.agent.printer import chat_loop, env
+from rag_lab.agent.printer import chat_loop
 from rag_lab.agent.sql import SqlFlow, build_graph, remembered
-from rag_lab.config import SqlAgentConfig
-from rag_lab.embedding.ollama import OllamaEmbedder
-from rag_lab.metrics.store import MetricsStore
-from rag_lab.storage.qdrant import QdrantStore
+from rag_lab.settings import load
 
 
 def _remember(answer: str, events: list[Event]) -> str:
@@ -40,11 +38,9 @@ def main(args) -> None:
         **({"think": False} if args.no_think else {}),
         **({"use_examples": False} if args.no_examples else {}),
     }
-    cfg = SqlAgentConfig(**overrides)
-    base_url = env("OLLAMA_BASE_URL")
-    database_url = env("METRICS_DATABASE_URL")
-    metrics = MetricsStore(database_url)
+    cfg = load().database_chat.model_copy(update=overrides)
+    metrics = clients.metrics()
     if not metrics.get_db_schema(args.schema):
         sys.exit(f"There is no schema '{args.schema}'.")
-    graph = build_graph(metrics, args.schema, base_url, cfg, OllamaEmbedder(base_url), QdrantStore(env("QDRANT_URL")))
+    graph = build_graph(metrics, args.schema, clients.ollama_url(), cfg, clients.embedder(), clients.qdrant())
     chat_loop(graph, SqlFlow(args.schema, cfg), metrics, args.question, _remember)
