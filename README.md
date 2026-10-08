@@ -164,7 +164,7 @@ Everything the UI does goes through the HTTP API, so another front end can do th
 
 ## Moving to a server
 
-For a server where PostgreSQL and Qdrant already run in Docker. No code changes: two files do.
+For a server where PostgreSQL and Qdrant already run in Docker. No code changes: two files do. This is the short version; `INTEGRATE.md` has every step, what to check after each, and how a backend uses the API.
 
 1. **PostgreSQL.** An admin runs `scripts/provision.sql` once with `psql` (its first lines say how). It makes the roles, our schema, and the databases that are missing; it can be run again. It does not change a database that is already there, apart from the grants to our roles.
 2. **`.env`.** `COMPOSE_FILE=docker-compose.yml:docker-compose.vm.yml`, `PLATFORM_NETWORK` (the Docker network the databases are on), `POSTGRES_HOST`, the passwords, `OLLAMA_BASE_URL`.

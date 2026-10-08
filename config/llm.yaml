@@ -17,7 +17,7 @@ ocr:
 # Scores the chunks a search found against the question. The 4B builds work; the 0.6B builds give
 # every chunk a score of 0.
 reranker:
-  model: dengcao/Qwen3-Reranker-4B:Q8_0
+  model: dengcao/Qwen3-Reranker-4B:Q4_K_M
 
 # What both chats share. A chat's own section below may set any of these again for itself.
 chat:

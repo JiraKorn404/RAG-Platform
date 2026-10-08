@@ -7,12 +7,12 @@
 # `name` is the experiment, which is also the Qdrant collection. Settings cannot change under a name:
 # to change one (here, or the `embedding` section of llm.yaml), change `name` too. PDFs that arrive
 # from then on go into the new collection.
-name: technical-doc
+name: doc
 
 parse:                  # Docling
   table_mode: accurate  # fast or accurate
   ocr: false            # true: scanned pages are read with the OCR model of llm.yaml (about 18 s a page)
-  pictures: true       # true: each picture becomes a chunk; needs an embedding model that takes images
+  pictures: false       # true: each picture becomes a chunk; needs an embedding model that takes images
 
 chunk:
   strategy: hybrid      # hybrid, hierarchical, fixed, recursive or semantic
