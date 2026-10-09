@@ -108,7 +108,7 @@ database_chat: {num_ctx: 32768}
     assert (experiment.name, experiment.parse.ocr, experiment.parse.ocr_model) == ("auto", True, "other-ocr")
     assert experiment.chunk == ChunkConfig()  # a section left out keeps its defaults
     assert experiment.embed == EmbedConfig.for_model("embeddinggemma-2:740m")  # the family's templates
-    assert settings.documents_chat.search.reranker.model == "other-reranker"
+    assert settings.documents_chat.reranker.model == "other-reranker"
     assert settings.database_chat.embed.model == "embeddinggemma-2:740m"
     # `chat` is shared, and a chat's own section wins
     assert (settings.documents_chat.model, settings.documents_chat.num_ctx) == ("shared-model", 4096)

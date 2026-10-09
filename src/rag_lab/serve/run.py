@@ -54,6 +54,12 @@ class Summary:
     cited: list[int] = field(default_factory=list)
     unknown_citations: list[int] = field(default_factory=list)
     log: Callable[[MetricsStore], None] | None = None  # extra writes, such as the search log
+    # How a documents turn went (see `Done`); a database flow leaves them empty.
+    outcome: str = ""
+    abstain_reason: str | None = None
+    route: str = ""
+    rewrites: int = 0
+    top_score: float | None = None
 
 
 class Flow(Protocol):
@@ -147,6 +153,11 @@ def run(
         timings=timings,
         total_ms=(time.perf_counter() - start) * 1000,
         abstained=summary.abstained,
+        outcome=summary.outcome,
+        abstain_reason=summary.abstain_reason,
+        route=summary.route,
+        rewrites=summary.rewrites,
+        top_score=summary.top_score,
     )
     stored.append(done)
     failure = None

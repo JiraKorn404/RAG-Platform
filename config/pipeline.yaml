@@ -7,7 +7,7 @@
 # `name` is the experiment, which is also the Qdrant collection. Settings cannot change under a name:
 # to change one (here, or the `embedding` section of llm.yaml), change `name` too. PDFs that arrive
 # from then on go into the new collection.
-name: doc
+name: docs-gemma2
 
 parse:                  # Docling
   table_mode: accurate  # fast or accurate

@@ -86,9 +86,10 @@ class Repairing:
 @dataclass
 class Hit:
     rank: int
-    # The score of the method that ranked the hit: Qdrant's cosine similarity for `dense`, a rank-fusion
-    # score for `hybrid`, the reranker's probability of "yes" for the rerank methods. Only the cosine
-    # score is comparable between experiments, and `distance` means something only for it.
+    # The score of what ranked the hit: Qdrant's cosine similarity for a `dense` search, a rank-fusion
+    # score for a `hybrid` one, the reranker's probability of "yes" once it is reranked (a chatbot's
+    # hits). Only the cosine score is comparable between experiments, and `distance` means something
+    # only for it.
     similarity: float
     distance: float  # 1 - similarity
     text: str
@@ -149,6 +150,12 @@ class Done:
     saved: bool = True  # false when saving the turn failed; the answer is still good
     save_error: str | None = None
     turn_id: int | None = None  # the saved turn, when it was saved
+    # How a documents turn went, in one place (a database turn leaves these empty).
+    outcome: str = ""  # "answered", "direct" or "abstained"
+    abstain_reason: str | None = None  # "retrieval" or "grounding", when it abstained
+    route: str = ""  # "retrieve" or "direct"
+    rewrites: int = 0  # other queries tried
+    top_score: float | None = None  # the best reranker score of the turn
 
 
 @dataclass

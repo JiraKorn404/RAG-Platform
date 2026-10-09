@@ -44,7 +44,7 @@ The local PostgreSQL has the databases `dagster` (Dagster's own), `rag_metrics` 
 
 This project is kept minimal. Prefer the smallest change that works, and do not add code, config, abstractions or docs that nothing needs yet.
 
-- **Few tests.** Write tests only for pure logic where a silent bug would corrupt results: vector truncation and re-normalisation, BM25 weights and the reranker score, config hashing and the settings loader, CSV import (cleaning of names, guessing of column types, delimiter detection) and the SQL guard (the one place where a silent bug is a security hole). No tests for Dagster assets, Docling, Docker or anything needing Qdrant, Postgres or Ollama, and no mocks or fakes of them. Do not add test coverage to a change unless asked.
+- **Few tests.** Write tests only for pure logic where a silent bug would corrupt results: vector truncation and re-normalisation, BM25 weights and the reranker score, the decisions of the documents graph (answer, rewrite or abstain), config hashing and the settings loader, CSV import (cleaning of names, guessing of column types, delimiter detection) and the SQL guard (the one place where a silent bug is a security hole). No tests for Dagster assets, Docling, Docker or anything needing Qdrant, Postgres or Ollama, and no mocks or fakes of them. Do not add test coverage to a change unless asked.
 - **No re-testing after minor edits.** After a small change (rename, config tweak, comment, log line, doc edit, small refactor) do not run the test suite, rebuild containers or re-materialise assets. Run something only when a change alters the logic of one of the tested areas above, or when asked. Never rerun a passing check "to be sure".
 - **Verify by running the real thing, once.** When a piece of work is finished, confirm it with a single real run on the stack. Do not build extra verification around it.
 - **Keep dependencies and services few.** Do not add a library, container or tool without a stated need.
@@ -111,13 +111,14 @@ The SQL chatbot reads a description of every table from the registry (`db_schema
 
 ### Search and the chatbot
 
-- **Search** (`serve/search.py`): `dense`, `hybrid` (dense and BM25 prefetches fused with RRF), `dense+rerank`, `hybrid+rerank`. A hit's `similarity` is a cosine similarity only for `dense`.
-- **Reranker** (`serve/search.py: OllamaReranker`): one `/api/generate` call per (query, chunk) with the Qwen3-Reranker prompt, one token and `logprobs`, scored `P(yes)/(P(yes)+P(no))`. `dengcao/Qwen3-Reranker-4B` works (`Q8_0`, `Q4_K_M`); the 0.6B builds give every chunk 0.
-- **Documents agent** (`serve/chat_documents.py`, LangGraph): `condense -> retrieve -> grade -> generate`, with `grade -> rewrite -> retrieve` while the chunks do not answer and `grade -> abstain` when the retries are used up. Retrieval is always `hybrid+rerank`. `grade` uses the best reranker score: at or above `enough_score` it answers, below `missing_score` it does not, in between the model is asked. The answer cites `[n]`. Retrieved pictures are attached to the answer prompt with `Passage [n]` drawn above them.
+- **Search** (`serve/search.py`): `dense` or `hybrid` (dense and BM25 prefetches fused with RRF). A hit's `similarity` is a cosine similarity only for `dense`.
+- **Reranker** (`serve/search.py: OllamaReranker`, `rerank_hits`): one `/api/generate` call per (question, chunk) with the Qwen3-Reranker prompt, one token and `logprobs`, scored `P(yes)/(P(yes)+P(no))`. `dengcao/Qwen3-Reranker-4B` works (`Q8_0`, `Q4_K_M`); the 0.6B builds give every chunk 0. It is about 0.8 s a chunk, so it is most of a search's time.
+- **Documents agent** (`serve/chat_documents.py`, LangGraph): `condense -> retrieve -> rerank -> grade -> generate`, with `grade -> rewrite -> retrieve` while the chunks do not answer and `grade -> abstain` when the retries are used up. `retrieve` is a hybrid search for `candidates` hits. `rerank` scores them **against the standalone question, not the query that found them**, keeps every score of the turn (a chunk a rewrite finds again is not scored again) and hands on the best `top_k`. `grade` makes no model call: the best score at or above `enough_score` answers, from the kept chunks at or above `min_doc_score`. The answer cites `[n]`. Retrieved pictures are attached to the answer prompt with `Passage [n]` drawn above them. A rewrite that repeats a query already searched uses its attempt and is not searched again, so a turn searches at most `max_rewrites + 1` times (`after_grade`, `after_rewrite`). `Done` says how the turn went: `outcome` (`answered` or `abstained`), `abstain_reason`, `route`, `rewrites` and `top_score`. `PLAN.md` is the plan this flow is being rebuilt by.
 - **SQL agent** (`serve/chat_database.py`): `condense -> schema -> examples -> write_sql -> check -> run_sql -> answer`, with `repair` up to `max_repairs` times and `abstain` when the schema is too large, the model replies `CANNOT`, or the repairs are used up. The model is given the whole schema as text (`serve/catalog.py`, from the registry: descriptions, types, example values, ranges, likely joins); there is no retrieval. A schema over `schema_char_budget` is refused, not cut.
 - **The SQL guard** (`serve/guard.py`, sqlglot): accepts exactly one `SELECT`, refuses any write, DDL, locking clause, unknown function or table outside the chat's schema, qualifies tables and adds a `LIMIT`. What runs is the SQL sqlglot writes out, not the model's text. **Known limit: the guard is the only thing keeping one dataset from another**, since the reader may select from every schema it was granted.
 - **Good answers** (`serve/examples.py`): the thumbs-up under a database answer saves the question and its SQL; they are embedded with `llm.yaml`'s `embedding` into `sqlexamples__<schema>` in Qdrant and shown to the model for similar questions. `examples_min_score` depends on the embedding model (0.8 for `embeddinggemma-2`, about 0.55 for `qwen3-embedding:0.6b`). Changes go table first, then Qdrant; `python -m rag_lab tables examples --reindex` rebuilds.
 - **Events** (`core/events.py`): every node reports typed events through LangGraph's custom stream. `run(graph, flow, question, history, metrics=, session_id=)` (`serve/run.py`) yields them, ends with `Done`, and saves the turn (also a failed one, with `error`). A saved turn keeps its events, so the page replays a past chat through the same `apply(trace, event)` that draws a live one. `Hit` lives there too, so the events import nothing.
+- **Eval** (`serve/evaluate.py`, `python -m rag_lab eval`): the cases of `data/eval/<experiment>.jsonl` (a question, what to expect: `answer`, `abstain` or `direct`, the facts the answer must contain, and snippets of the passage that holds it) are asked of the documents graph through `run()` without a chat, so nothing is saved. It writes `data/eval/results/<experiment>-<label>.json` and prints the hit rate, the correct answers, abstaining, latency and each case's best reranker score. `PLAN.md` has the run of every phase.
 - **Chats**: a chat is a row in `chat_sessions` with a `kind` (`documents` or `database`) for its whole life; a composite foreign key refuses a turn of the other kind. It belongs to its experiment or its schema and is deleted with it. The caller chooses the chat's id; the chat is made with its first turn.
 - `num_ctx` is always set, because Ollama's default silently cuts long prompts.
 
@@ -153,7 +154,7 @@ config/                      # connections.yaml, pipeline.yaml, llm.yaml; connec
 docker/                      # ingest.Dockerfile, serve.Dockerfile, dagster.yaml (mounted), workspace.yaml
 scripts/                     # provision.sql (databases, roles, our schema), grant_read.sql (an existing schema to the reader)
 src/rag_lab/
-  cli.py  __main__.py        # python -m rag_lab search | chat | tables | setup
+  cli.py  __main__.py        # python -m rag_lab search | chat | tables | eval | setup
   core/                      # what both sides need
     config.py                # the settings as pydantic models
     settings.py              # reads config/*.yaml; DATA_DIR and the folders
@@ -178,6 +179,7 @@ src/rag_lab/
     run.py                   # the runner of a turn, and the chat model
     chat_documents.py  chat_database.py   # the two agents with their prompts
     catalog.py  guard.py  execute.py  examples.py   # the SQL side: schema as text, the guard, running, good answers
+    evaluate.py              # the eval of the documents chatbot: cases in, numbers out
     library.py               # what is in each experiment; delete a document or an experiment
     service.py               # what a front end can do
     api.py                   # the same, over HTTP
@@ -185,6 +187,7 @@ ui/                          # app.py, experiments.py, chat.py, trace_view.py, h
 data/raw/                    # drop PDFs here (git-ignored)
 data/tables/<schema>/        # drop CSV files here (git-ignored)
 data/artifacts/              # per-stage outputs (git-ignored)
+data/eval/                   # the eval cases, <experiment>.jsonl, and results/ (git-ignored)
 tests/                       # the few pure-logic tests
 docs/history/                # the plans of the earlier phases
 ```
@@ -205,6 +208,7 @@ docker compose exec api python -m rag_lab tables schema --schema <name>      # w
 docker compose exec api python -m rag_lab tables examples [--schema <name>] [--reindex] [--remove <id>]
 docker compose exec api python -m rag_lab tables drop --schema <name> [--table <name>]
 docker compose exec api python -m rag_lab tables register                    # describe the schemas of existing_schemas
+docker compose exec api python -m rag_lab eval --experiment <name> --label <label> [--against <label>]   # the cases of data/eval/<name>.jsonl
 
 # the tests, in a container (in Git Bash prefix with MSYS_NO_PATHCONV=1)
 docker compose run --rm --no-deps -e UV_NO_CACHE=1 -v ./tests:/app/tests api sh -c "uv pip install --system -q pytest && python -m pytest /app/tests -q"

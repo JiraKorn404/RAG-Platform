@@ -111,7 +111,7 @@ def answer_turn(question: str, kind: str, target: str, settings: dict, chat_id: 
                 step = event.node
                 label = STEP_NAMES[step] + "…"
                 if step == "retrieve":
-                    label = f"{STEP_NAMES[step]} (hybrid, {settings['candidates']} candidates, then reranking)…"
+                    label = f"{STEP_NAMES[step]} (hybrid, {settings['candidates']} candidates)…"
                 status.update(label=label)
             elif isinstance(event, Thinking):
                 thinking_box.markdown(f"**Thinking**\n\n{trace['thinking']}")

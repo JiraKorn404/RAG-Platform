@@ -416,10 +416,10 @@ The `data` line is one JSON object, and its `type` repeats the `event` line. The
 | `StepStarted` | `node` | Show what is happening now (see the two lists below) |
 | `AnswerToken` | `text` | A piece of the answer. Join them in order to show the answer as it is written |
 | `Thinking` | `text` | A piece of the model's reasoning, if you want to show it |
-| `Done` | `answer`, `cited`, `abstained`, `turn_id`, `total_ms`, `saved`, `save_error` | The end. `answer` is the whole answer. `abstained: true` means "not found" or "could not be answered", and `answer` then says so. `turn_id` is what `POST /turns/{id}/good` takes |
+| `Done` | `answer`, `cited`, `abstained`, `turn_id`, `total_ms`, `saved`, `save_error`, and for a documents turn `outcome`, `abstain_reason`, `route`, `rewrites`, `top_score` | The end. `answer` is the whole answer. `abstained: true` means "not found" or "could not be answered", and `answer` then says so. `turn_id` is what `POST /turns/{id}/good` takes. `outcome` is `answered` or `abstained`, `abstain_reason` says why (`retrieval`), `rewrites` is how many other queries were tried and `top_score` the best reranker score |
 | `Failed` | `message` | The turn stopped with an error (Ollama or a database went away). There is no `Done` |
 
-**A documents turn**, in order: `condense` (then `Query`: the question as it is searched for) → `retrieve` (then `Retrieved`, with `hits`) → `grade` (then `Graded`) → `generate` (`Thinking`, `AnswerToken`) → `Done`. When the passages do not answer the question it tries one other query (`rewrite`, `Rewrote`, then `retrieve` and `grade` again), and if that fails too, `abstain`.
+**A documents turn**, in order: `condense` (then `Query`: the question as it is searched for) → `retrieve` → `rerank` (then `Retrieved`, with `hits`) → `grade` (then `Graded`) → `generate` (`Thinking`, `AnswerToken`) → `Done`. When the passages do not answer the question it tries one other query (`rewrite`, `Rewrote`, then `retrieve`, `rerank` and `grade` again), and if that fails too, `abstain`.
 
 - A hit has `rank`, `similarity` (the reranker's score, 0 to 1), `text`, `source_file`, `page`, `modality` (`text`, `table` or `picture`), `headings`, `doc_id`, `chunk_id` and, for a picture, `image`.
 - The answer cites passages as `[1]`, `[2]`: the number is a hit's `rank`. `Done.cited` lists the numbers that were cited.

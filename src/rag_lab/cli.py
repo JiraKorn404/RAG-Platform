@@ -7,6 +7,7 @@
     tables examples [--schema <name>] [--reindex] [--remove <id>]
     tables drop --schema <name> [--table <name>]
     tables register
+    eval --experiment <name> --label <label> [--against <label>]
     setup
 
 `search` is a dense search of a collection. `chat` answers from an experiment's documents or a schema's
@@ -18,7 +19,9 @@ the budget. `tables examples` lists the good answers saved for a schema; with `-
 their Qdrant collections from the table, and with `--remove` it deletes one. `tables drop` deletes a
 table or a whole schema with its chats and good answers (the CSV files stay, and so do the tables of a
 registered schema). `tables register` describes the tables that are already in the database
-(ingest/register.py). `setup` checks the databases and makes our tables (core/setup.py).
+(ingest/register.py). `eval` asks the documents chatbot every case of data/eval/<experiment>.jsonl and
+prints how it did, next to an earlier run with `--against` (serve/evaluate.py). `setup` checks the
+databases and makes our tables (core/setup.py).
 The connections and the settings are read from config/ (inside the containers this just works)."""
 
 import argparse
@@ -50,7 +53,7 @@ from rag_lab.core.events import (
 )
 from rag_lab.core.settings import load
 from rag_lab.core.store import MetricsStore
-from rag_lab.serve import catalog, examples
+from rag_lab.serve import catalog, evaluate, examples
 from rag_lab.serve.chat_database import SqlFlow, remembered
 from rag_lab.serve.chat_database import build_graph as build_database_graph
 from rag_lab.serve.chat_documents import DocumentsFlow
@@ -137,7 +140,11 @@ class Printer:
             if event.context_full:
                 print("   WARNING: the prompt filled the context window, so Ollama cut it")
         elif isinstance(event, Done):
-            if event.abstained:
+            if event.outcome:  # a documents turn says how it went
+                why = f" ({event.abstain_reason})" if event.abstain_reason else ""
+                score = f", best score {event.top_score:.3f}" if event.top_score is not None else ""
+                print(f"\noutcome: {event.outcome}{why}, {event.rewrites} rewrite(s){score}", end="")
+            elif event.abstained:
                 print("\nabstained: no answer was found", end="")
             print(f"\ncited: {event.cited or 'nothing'}", end="")
             print(f"; no such passage: {event.unknown_citations}" if event.unknown_citations else "")
@@ -344,6 +351,21 @@ def tables_register(args) -> None:
         print("Nothing to do: `tables_database.existing_schemas` in config/connections.yaml names no schema.")
 
 
+def eval_command(args) -> None:
+    earlier = None
+    if args.against:
+        path = evaluate.results_path(args.experiment, args.against)
+        if not path.exists():
+            sys.exit(f"There is no run labelled '{args.against}': {path} does not exist.")
+        earlier = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        results = evaluate.evaluate(args.experiment, args.label, progress=lambda line: print(line, flush=True))
+    except ValueError as e:
+        sys.exit(str(e))
+    print("\n" + evaluate.report(results, earlier))
+    print(f"\nwritten to {evaluate.results_path(args.experiment, args.label)}")
+
+
 def setup_command(args) -> None:
     from rag_lab.core.setup import main as setup
 
@@ -402,6 +424,12 @@ def main() -> None:
     tables.add_parser("register", help="describe the tables that are already in the database").set_defaults(
         main=tables_register
     )
+
+    measured = commands.add_parser("eval", help="ask the documents chatbot every case of an eval set")
+    measured.add_argument("--experiment", required=True)
+    measured.add_argument("--label", required=True, help="the name of this run, for example phase0")
+    measured.add_argument("--against", metavar="LABEL", help="an earlier run to show the numbers next to")
+    measured.set_defaults(main=eval_command)
 
     commands.add_parser("setup", help="check the databases and make our tables").set_defaults(main=setup_command)
 

@@ -180,8 +180,8 @@ class IndexConfig(_Section):
     sparse: bool = True
 
 
-SearchMethod = Literal["dense", "hybrid", "dense+rerank", "hybrid+rerank"]
-SEARCH_METHODS: tuple[str, ...] = ("dense", "hybrid", "dense+rerank", "hybrid+rerank")
+SearchMethod = Literal["dense", "hybrid"]
+SEARCH_METHODS: tuple[str, ...] = ("dense", "hybrid")
 
 
 # The instruction a question is embedded with when it looks for good answers to similar questions.
@@ -204,18 +204,12 @@ class SearchConfig(_Section):
     does not make a new experiment."""
 
     method: SearchMethod = "dense"
-    # What the first stage hands on: each branch of a hybrid search fetches this many hits, and a
-    # reranker scores this many. At least top k is always fetched.
+    # Each branch of a hybrid search fetches this many hits. At least top k is always fetched.
     candidates: int = 20
-    reranker: RerankerConfig = RerankerConfig()
 
     @property
     def hybrid(self) -> bool:
-        return self.method.startswith("hybrid")
-
-    @property
-    def rerank(self) -> bool:
-        return self.method.endswith("+rerank")
+        return self.method == "hybrid"
 
 
 class ChatModelConfig(_Section):
@@ -236,16 +230,23 @@ class AgentConfig(ChatModelConfig):
     """llm.yaml: documents_chat. The chatbot agent for documents. Not part of ExperimentConfig or its
     hash: it changes how an experiment is asked, not what is stored in it."""
 
-    top_k: int = 5  # chunks given to the model
-    # Judging the retrieval by the best chunk's reranker score (a probability of "yes"): at or above
-    # `enough_score` the chunks answer it, below `missing_score` they do not, and in between the model is
-    # asked. Chosen on one document: questions it answers scored 0.99 or more, questions it does not
-    # cover 0.0 to 0.05 (carburetor icing, which it never mentions, 0.051).
+    top_k: int = 5  # chunks kept after reranking; the model is given those at or above `min_doc_score`
+    # Judging the retrieval by the reranker's score of the best chunk against the question (a probability
+    # of "yes"), with no model call: at or above `enough_score` the chunks answer it, below they do not.
+    # A kept chunk that scores below `min_doc_score` is not given to the model.
+    # Both were set from the eval of 2026-10-09 (the experiment docs-gemma2: two PDFs, 20 cases,
+    # Qwen3-Reranker-4B:Q8_0). `enough_score`: the best chunk scored 0.975 to 1.000 for the 15 questions
+    # the documents answer and 0.000 to 0.032 for the 3 they do not, so any value between separates
+    # them, and 0.5 is the middle. `min_doc_score`: the 18 chunks that hold an answer scored 0.512 or
+    # more (17 of them 0.975 or more), and of the 57 other kept chunks 37 scored below 0.1; it is set
+    # low, so that only a chunk the reranker is sure about is left out. The scores belong to the
+    # reranker build: look at them again after changing it.
     enough_score: float = 0.5
-    missing_score: float = 0.1
+    min_doc_score: float = 0.1
     max_rewrites: int = 1  # different queries tried when the chunks do not answer it, before giving up
-    # The documents are searched with hybrid search and reranking: the reranker scores this many hits
-    # (one call to Ollama each) and the best `top_k` are kept. The reranker is llm.yaml's `reranker`.
+    # The documents are searched with hybrid search, which hands this many hits to the reranker (one
+    # call to Ollama each; a chunk that an earlier query of the same turn brought is not scored again).
+    # The reranker is llm.yaml's `reranker`.
     candidates: int = 20
     reranker: RerankerConfig = RerankerConfig()
     # A picture among the chunks is given to the answer model as an image, not only as its caption. The
@@ -255,7 +256,7 @@ class AgentConfig(ChatModelConfig):
 
     @property
     def search(self) -> SearchConfig:
-        return SearchConfig(method="hybrid+rerank", candidates=self.candidates, reranker=self.reranker)
+        return SearchConfig(method="hybrid", candidates=self.candidates)
 
 
 class SqlAgentConfig(ChatModelConfig):

@@ -27,6 +27,7 @@ from rag_lab.core.events import (
 STEP_NAMES = {
     "condense": "Reading the question",
     "retrieve": "Searching",
+    "rerank": "Reranking",
     "grade": "Checking the chunks",
     "rewrite": "Trying a different query",
     "generate": "Writing the answer",

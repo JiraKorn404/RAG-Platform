@@ -1,14 +1,14 @@
-"""Searching an experiment's collection: `dense`, `hybrid` (dense and BM25 fused with RRF), and either
-with a reranker on top. The reranker is here too, because only a search uses it."""
+"""Searching an experiment's collection: `dense` or `hybrid` (dense and BM25 fused with RRF). The
+reranker is here too: `rerank_hits` scores what a search found against the question."""
 
 import math
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
-from rag_lab.core.config import ExperimentConfig, SearchConfig
+from rag_lab.core.config import ExperimentConfig, RerankerConfig, SearchConfig
 from rag_lab.core.embed import EmbedResult, OllamaEmbedder, query_vector
 from rag_lab.core.events import Hit
 from rag_lab.core.qdrant import QdrantStore
@@ -60,21 +60,21 @@ class OllamaReranker:
         self.timeout = timeout
         self.retries = retries
 
-    def score(self, query: str, texts: list[str], cfg: SearchConfig) -> RerankResult:
+    def score(self, query: str, texts: list[str], cfg: RerankerConfig) -> RerankResult:
         start = time.perf_counter()
         scores = [self._score_one(query, text, cfg) for text in texts]
         return RerankResult(scores, (time.perf_counter() - start) * 1000)
 
-    def _score_one(self, query: str, text: str, cfg: SearchConfig) -> float:
+    def _score_one(self, query: str, text: str, cfg: RerankerConfig) -> float:
         body = {
-            "model": cfg.reranker.model,
-            "prompt": prompt(query, text, cfg.reranker.instruction),
+            "model": cfg.model,
+            "prompt": prompt(query, text, cfg.instruction),
             "raw": True,
             "stream": False,
             "logprobs": True,
             "top_logprobs": 20,
-            "keep_alive": cfg.reranker.keep_alive,
-            "options": {"num_predict": 1, "temperature": 0, "num_ctx": cfg.reranker.num_ctx},
+            "keep_alive": cfg.keep_alive,
+            "options": {"num_predict": 1, "temperature": 0, "num_ctx": cfg.num_ctx},
         }
         for attempt in range(self.retries):
             try:
@@ -84,7 +84,7 @@ class OllamaReranker:
                     logprobs = resp.json().get("logprobs")
                     if not logprobs:
                         raise RuntimeError(
-                            f"Ollama returned no log-probabilities for '{cfg.reranker.model}'. "
+                            f"Ollama returned no log-probabilities for '{cfg.model}'. "
                             "Reranking needs an Ollama with `logprobs` support."
                         )
                     return yes_probability(logprobs[0]["top_logprobs"])
@@ -93,6 +93,21 @@ class OllamaReranker:
             if attempt < self.retries - 1:
                 time.sleep(2**attempt)
         raise RuntimeError(f"Ollama rerank failed after {self.retries} attempts ({self.base_url})")
+
+
+def rerank_hits(
+    question: str, hits: list[Hit], reranker: OllamaReranker, cfg: RerankerConfig, scored: list[Hit] = ()
+) -> tuple[list[Hit], float]:
+    """Score `hits` against the question and return every hit scored so far, best first, with how long
+    the scoring took. A returned hit has the reranker's score as its `similarity` and its place as its
+    `rank`. `scored` is what an earlier search for the same question got back from here: a chunk among
+    them keeps its score and is not sent to the reranker again."""
+    known = {hit.chunk_id for hit in scored}
+    new = [hit for hit in hits if hit.chunk_id not in known]
+    result = reranker.score(question, [hit.text for hit in new], cfg) if new else RerankResult([], 0.0)
+    every = [*scored, *(replace(hit, similarity=s, distance=1 - s) for hit, s in zip(new, result.scores))]
+    every.sort(key=lambda hit: -hit.similarity)
+    return [replace(hit, rank=rank) for rank, hit in enumerate(every, start=1)], result.wall_ms
 
 
 # --- timing ------------------------------------------------------------------------------------------
@@ -121,7 +136,7 @@ class SearchResult:
     search_ms: float  # Qdrant, including the BM25 branch and the fusion of a hybrid search
     total_ms: float
     method: str = "dense"
-    rerank_ms: float = 0.0
+    rerank_ms: float = 0.0  # set by a caller that reranked the hits (`rerank_hits`)
 
 
 def load_experiment(metrics: MetricsStore, name: str) -> tuple[str, ExperimentConfig]:
@@ -142,20 +157,15 @@ def search(
     filters: dict[str, str] | None = None,
     embedded: EmbedResult | None = None,
     options: SearchConfig | None = None,
-    reranker: OllamaReranker | None = None,
 ) -> SearchResult:
     """Embed the query (with the instruction prefix) and search the experiment's collection.
     `filters` match payload fields exactly; only `doc_id`, `modality` and `source_file` have indexes.
     `embedded` is an already embedded query (same model, dimension and instruction as the experiment),
     so several experiments that share an embedding setup can reuse one call; its time counts as embed_ms.
     `options` picks the search method (dense when not given): `hybrid` needs an experiment made with
-    `index.sparse`, and the rerank methods need a `reranker`. A rerank method fetches `options.candidates`
-    hits (at least top k) and returns the best top k by the reranker's score."""
+    `index.sparse`, and each of its two branches fetches `options.candidates` hits (at least top k)."""
     options = options or SearchConfig()
-    if options.rerank and reranker is None:
-        raise ValueError(f"The search method '{options.method}' needs a reranker.")
     reused = embedded is not None
-    first_stage = max(options.candidates, top_k) if options.rerank else top_k
     with timed() as total:
         if embedded is None:
             embedded = embedder.embed([query], config.embed, kind="query")
@@ -164,11 +174,11 @@ def search(
                 points = store.query(
                     config.collection,
                     embedded.vectors[0],
-                    first_stage,
+                    top_k,
                     filters,
                     config.index.hnsw_ef,
                     sparse=query_vector(query) if options.hybrid else None,
-                    branch_limit=max(options.candidates, first_stage),
+                    branch_limit=max(options.candidates, top_k),
                 )
             except Exception as e:  # Qdrant names the missing vector in its error
                 if options.hybrid and "bm25" in str(e):
@@ -177,20 +187,12 @@ def search(
                         f"'{options.method}'. It was made without `index.sparse`."
                     ) from e
                 raise
-        rerank_ms = 0.0
-        scores = [p.score for p in points]
-        if options.rerank and points:
-            ranked = reranker.score(query, [p.payload["text"] for p in points], options)
-            rerank_ms = ranked.wall_ms
-            order = sorted(range(len(points)), key=lambda i: -ranked.scores[i])[:top_k]
-            points = [points[i] for i in order]
-            scores = [ranked.scores[i] for i in order]
 
     hits = [
         Hit(
             rank=rank,
-            similarity=score,
-            distance=1 - score,
+            similarity=p.score,
+            distance=1 - p.score,
             text=p.payload["text"],
             source_file=p.payload.get("source_file"),
             page=p.payload.get("page"),
@@ -200,7 +202,7 @@ def search(
             chunk_id=p.payload["chunk_id"],
             image=f"{config.name}/parse/{p.payload['image']}" if p.payload.get("image") else None,
         )
-        for rank, (p, score) in enumerate(zip(points, scores), start=1)
+        for rank, p in enumerate(points, start=1)
     ]
     return SearchResult(
         query=query,
@@ -209,5 +211,4 @@ def search(
         search_ms=qdrant_time.ms,
         total_ms=total.ms + (embedded.wall_ms if reused else 0),
         method=options.method,
-        rerank_ms=rerank_ms,
     )

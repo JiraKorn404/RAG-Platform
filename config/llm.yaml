@@ -7,7 +7,7 @@
 # in pipeline.yaml. Known families: qwen3-embedding (0.6b, 4b, 8b) and embeddinggemma-2 (740m, the one
 # that can also embed pictures).
 embedding:
-  model: qwen3-embedding:0.6b
+  model: embeddinggemma-2:740m
   dimension: null       # null keeps the model's own size; a smaller number cuts the vectors to it
 
 # Reads scanned pages when pipeline.yaml has `parse.ocr: true`.
@@ -17,12 +17,12 @@ ocr:
 # Scores the chunks a search found against the question. The 4B builds work; the 0.6B builds give
 # every chunk a score of 0.
 reranker:
-  model: dengcao/Qwen3-Reranker-4B:Q4_K_M
+  model: dengcao/Qwen3-Reranker-4B:Q8_0
 
 # What both chats share. A chat's own section below may set any of these again for itself.
 chat:
-  model: gemma4:e4b
-  think: true           # the model thinks before it answers (or before it writes the SQL)
+  model: gemma4:e4b-mlx
+  think: true          # the model thinks before it answers (or before it writes the SQL)
   keep_alive: 30m
   history_turns: 6      # earlier questions and answers a follow-up is read with
 
@@ -30,10 +30,14 @@ chat:
 documents_chat:
   temperature: 0.2
   num_ctx: 8192         # the context window; a prompt longer than this is cut by Ollama
-  top_k: 5              # chunks given to the model
+  top_k: 5              # chunks kept after reranking
   candidates: 20        # hits the reranker scores, one call to Ollama each
-  enough_score: 0.5     # best reranker score at or above this: the chunks answer the question
-  missing_score: 0.1    # below this: they do not; in between the model is asked
+  # The two thresholds are the reranker's scores, measured with Qwen3-Reranker-4B:Q8_0 on the eval of
+  # docs-gemma2 (20 cases): the best chunk scored 0.975 or more for every question the documents answer
+  # and 0.032 or less for those they do not; a chunk that holds an answer never scored below 0.512.
+  # Measure again (python -m rag_lab eval) after changing the reranker.
+  enough_score: 0.5     # best score at or above this: the chunks answer the question; below: rewrite, then "not found"
+  min_doc_score: 0.1    # a kept chunk that scores below this is not given to the model
   max_rewrites: 1       # other queries tried before saying "not found"
   show_pictures: true   # a retrieved picture is given to the model as an image
   max_pictures: 2
