@@ -4,7 +4,7 @@
 
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -13,7 +13,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${DAGSTER_POSTGRES_DB}"]
       interval: 5s
@@ -34,7 +34,7 @@ services:
   # the local server's admin. It makes what is missing and can be run again. The names are the ones
   # config/connections.yaml uses.
   provision:
-    image: postgres:17
+    image: postgres:18
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:

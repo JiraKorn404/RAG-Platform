@@ -1,25 +1,41 @@
-# connections.yaml for a server that already has PostgreSQL and Qdrant in Docker, and whose tables are
-# already in PostgreSQL. Copy it over connections.yaml there and put the names right. See the README,
-# "Moving to a server", for the steps around it.
+# Where every service is. To use another server, change its line here (or the value in .env it refers to).
+# config/connections.vm.example.yaml is this file as it looks on a server that already has PostgreSQL
+# and Qdrant.
 #
-# The hosts are container names: docker-compose.vm.yml puts our containers on the platform's network.
+# ${NAME} is replaced with the environment variable of that name, which the containers get from .env:
+# passwords and private addresses stay there, out of git. The passwords go into a URL, so they may only
+# have letters and digits.
+#
+# After an edit: Dagster reads this file at its next sensor tick or run; the API and the UI keep their
+# clients, so `docker compose restart api ui`.
 
 ollama:
-  url: ${OLLAMA_BASE_URL}
+  url: ${OLLAMA_BASE_URL}       
 
 qdrant:
-  url: http://qdrant:6333          # the Qdrant container's name on the platform's network
+  url: ${QDRANT_BASE_URL} 
 
-# Our tables, in a schema of our own inside the platform's database.
+# Chats, metrics and the registry of tables. Our tables are made in `schema`, which must exist and belong
+# to this role. scripts/provision.sql makes the database, the schema and the roles below; the local
+# stack runs it by itself (docker-compose.local.yml).
 app_database:
-  url: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/platform
-  schema: rag
+  url: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/rag_log
+  schema: rag_log
 
-# The platform's tables. There is no loader: nothing of ours can write to them, and the CSV import is off.
+# The tables the SQL chatbot answers from. The reader role can only SELECT and is what runs the
+# chatbot's SQL. The loader role creates and fills the tables of the CSV files in data/tables; leave
+# `loader_url` out where the tables are already in the database, and name their schemas in
+# `existing_schemas` instead (then: scripts/grant_read.sql, and `python -m rag_lab tables register`).
 tables_database:
-  reader_url: postgresql://rag_reader:${SQL_READER_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/platform
-  existing_schemas: [public]
+  reader_url: postgresql://rag_reader:${SQL_READER_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/rag_tables
+  loader_url: postgresql://rag_loader:${SQL_LOADER_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/rag_tables
+  existing_schemas: []
 
+# The HTTP API. `url` is where the Streamlit UI finds it. With a `key`, a caller must send it in the
+# X-API-Key header; write it as ${RAG_API_KEY} and put the value in .env.
 api:
   url: http://api:8000
-  key: ${RAG_API_KEY}
+  key: ""
+
+# Not here: Dagster's own database. Dagster reads it from docker/dagster.yaml, which takes the server
+# from the same POSTGRES_* values of .env and the database name from DAGSTER_POSTGRES_DB.
